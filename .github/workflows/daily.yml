@@ -3,7 +3,7 @@ name: Daily AI News to Slack
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"  # 0:00 UTC ≈ 08:00 Beijing
+    - cron: "30 22 * * *"  # 0:00 UTC ≈ 08:00 Beijing
 
 jobs:
   run:
