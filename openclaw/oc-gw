@@ -1,0 +1,33 @@
+#!/bin/zsh
+set -euo pipefail
+
+PLIST="$HOME/Library/LaunchAgents/ai.openclaw.gateway.plist"
+LABEL="ai.openclaw.gateway"
+
+cmd="${1:-status}"
+
+case "$cmd" in
+  where)
+    echo "plist: $PLIST"
+    echo "label: $LABEL"
+    ;;
+  status)
+    openclaw gateway status
+    ;;
+  restart)
+    openclaw gateway restart
+    ;;
+  start)
+    openclaw gateway start
+    ;;
+  stop)
+    openclaw gateway stop
+    ;;
+  inspect)
+    launchctl print "gui/$(id -u)/$LABEL" | sed -n '1,120p'
+    ;;
+  *)
+    echo "Usage: oc-gw {where|status|restart|start|stop|inspect}" >&2
+    exit 2
+    ;;
+esac
