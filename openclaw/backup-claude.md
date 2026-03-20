@@ -14,10 +14,13 @@
 - 目的：`${HOME}/projects/migrate_to_new_device/claude-backups/claude-projects/<safe-name>/`
 - 项目列表来源：`~/.claude/projects/`（目录名为路径的 dash 编码形式）
 
-### 3) OpenClaw（迁移用全量归档）
-- 命令：`openclaw backup create --verify --output <dir>`
-- 输出目录：`${HOME}/projects/migrate_to_new_device/claude-backups/openclaw/`
-- 说明：归档包含 OpenClaw state（配置、凭据、会话、workspace/记忆等），适合迁移到新机器后直接恢复。
+### 3) OpenClaw（迁移用增量镜像，单目录）
+- 方式：`rsync` 增量镜像（每次只同步变化，维护一个目录，不生成一堆新 tar.gz）
+- 输出目录：`${HOME}/projects/migrate_to_new_device/claude-backups/openclaw-mirror/`
+- 内容：
+  - `~/.openclaw/`（配置、凭据、会话、workspace/记忆等）
+  - `~/Library/LaunchAgents/ai.openclaw.*.plist`（便于新机快速恢复服务）
+- 排除：`logs/`、`canvas/`、`browser/`、`cache/`、`tmp/` 等非迁移必需的大目录
 
 ## 运行方式
 
@@ -54,6 +57,10 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/ai.openclaw.backu
 
 把 `${HOME}/projects/migrate_to_new_device/claude-backups/` 整个目录带到新设备：
 - Claude 数据：直接覆盖/合并到新机的 `~/.claude/` 和项目 `.claude/`
-- OpenClaw：在新机安装 OpenClaw 后，将 `openclaw/*.tar.gz` 解包回 HOME（或按归档内路径恢复），再启动 gateway 服务。
+- OpenClaw：
+  1) 在新机安装 OpenClaw
+  2) 将 `openclaw-mirror/.openclaw/` 放回新机的 `~/.openclaw/`
+  3) 将 `openclaw-mirror/LaunchAgents/` 下的 `ai.openclaw.*.plist` 拷到新机 `~/Library/LaunchAgents/`
+  4) 用 `openclaw gateway install` 或 `launchctl bootstrap ...` 重新加载服务
 
-> 注意：归档中可能包含 token/key，按敏感文件对待。
+> 注意：备份中可能包含 token/key，按敏感文件对待。

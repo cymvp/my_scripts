@@ -71,17 +71,29 @@ log "=== Backup started ==="
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
-# 1b. OpenClaw full local backup (config, creds, sessions, workspace)
-# This is the easiest way to migrate to a new machine and keep working seamlessly.
-OPENCLAW_BACKUP_DIR="${BACKUP_ROOT}/openclaw"
-mkdir -p "${OPENCLAW_BACKUP_DIR}"
-if [ -x "${OPENCLAW_BIN}" ]; then
-    "${OPENCLAW_BIN}" backup create --verify --output "${OPENCLAW_BACKUP_DIR}" \
-        && log "openclaw backup -> ${OPENCLAW_BACKUP_DIR}/" \
-        || log "WARN: openclaw backup failed (see output above)"
-else
-    log "WARN: openclaw binary not found at ${OPENCLAW_BIN}; skipping openclaw backup"
-fi
+# 1b. OpenClaw incremental mirror (single directory, rsync-based)
+# Goal: migrate to a new machine and keep working seamlessly, without creating a new archive every run.
+OPENCLAW_MIRROR_DEST="${BACKUP_ROOT}/openclaw-mirror"
+mkdir -p "${OPENCLAW_MIRROR_DEST}"
+
+# Mirror ~/.openclaw (config, sessions, workspace, etc.)
+# Exclude volatile/large caches and logs that are not required for migration.
+/usr/bin/rsync -a --delete \
+    --exclude='logs/' \
+    --exclude='canvas/' \
+    --exclude='browser/' \
+    --exclude='cache/' \
+    --exclude='tmp/' \
+    "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
+log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (incremental mirror)"
+
+# Also mirror the LaunchAgents plists (so a new machine can re-install services quickly)
+mkdir -p "${OPENCLAW_MIRROR_DEST}/LaunchAgents"
+/usr/bin/rsync -a --delete \
+    --include='ai.openclaw.*.plist' \
+    --exclude='*' \
+    "${HOME}/Library/LaunchAgents/" "${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
+log "~/Library/LaunchAgents/ai.openclaw.*.plist -> ${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
 
 # 2. Each project's .claude/ → claude-projects/<safe-name>/
 CLAUDE_PROJECTS="${HOME}/.claude/projects"
