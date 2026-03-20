@@ -16,7 +16,7 @@
 
 ### 3) OpenClaw（迁移用增量镜像，单目录）
 - 方式：`rsync` 增量镜像（每次只同步变化，维护一个目录，不生成一堆新 tar.gz）
-- 输出目录：`${HOME}/projects/migrate_to_new_device/claude-backups/openclaw-mirror/`
+- 输出目录：`${HOME}/projects/migrate_to_new_device/openclaw-mirror/`
 - 内容：
   - `~/.openclaw/`（配置、凭据、会话、workspace/记忆等）
   - `~/Library/LaunchAgents/ai.openclaw.*.plist`（便于新机快速恢复服务）

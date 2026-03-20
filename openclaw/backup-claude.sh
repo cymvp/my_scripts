@@ -73,7 +73,7 @@ log "~/.claude/ -> ${GLOBAL_DEST}/"
 
 # 1b. OpenClaw incremental mirror (single directory, rsync-based)
 # Goal: migrate to a new machine and keep working seamlessly, without creating a new archive every run.
-OPENCLAW_MIRROR_DEST="${BACKUP_ROOT}/openclaw-mirror"
+OPENCLAW_MIRROR_DEST="${HOME}/projects/migrate_to_new_device/openclaw-mirror"
 mkdir -p "${OPENCLAW_MIRROR_DEST}"
 
 # Mirror ~/.openclaw (config, sessions, workspace, etc.)
