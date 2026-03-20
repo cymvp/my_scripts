@@ -84,6 +84,7 @@ mkdir -p "${OPENCLAW_MIRROR_DEST}"
     --exclude='browser/' \
     --exclude='cache/' \
     --exclude='tmp/' \
+    --exclude='workspace/.git/' \
     "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
 log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (incremental mirror)"
 
