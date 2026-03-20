@@ -53,6 +53,52 @@ launchctl bootout "gui/$(id -u)/ai.openclaw.backup-claude" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/ai.openclaw.backup-claude.plist"
 ```
 
+## OpenClaw 目录说明（迁移时哪些要留、哪些可丢）
+
+OpenClaw 的主要本地数据都在 `~/.openclaw/`。为了迁移“像现在一样接着工作”，一般建议按下面思路：
+
+### 必须迁移（建议保留）
+
+这些直接影响你的工作连续性：
+
+- `~/.openclaw/openclaw.json`
+  - 主配置（gateway、channels、默认模型、workspace 路径等）
+- `~/.openclaw/agents/`
+  - Agent 运行状态、会话索引与转录等
+  - 典型：`~/.openclaw/agents/main/sessions/`（会话/上下文）
+  - 以及 agent 的 auth profile（API key）等
+- `~/.openclaw/workspace/`
+  - 你的“可编辑工作区”
+  - 里面的 `MEMORY.md`、`memory/*.md`、`TOOLS.md`、`SOUL.md` 等属于你持续工作的核心资产
+
+> 备注：很多情况下 workspace 也会出现在 `~/.openclaw/` 的管理范围内（取决于配置），迁移目标是保证这套文件在新机可用。
+
+### 可选迁移（看你需求）
+
+- `~/.openclaw/plugins/`、`~/.openclaw/skills/`（如果存在）
+  - 可能包含插件/技能的本地状态或缓存；一般保留没坏处
+
+### 可丢弃（缓存/临时/日志，必要时可重建）
+
+这些不影响“能继续用”，但可能体积大：
+
+- `~/.openclaw/logs/`
+  - 日志文件，迁移通常不需要
+- `~/.openclaw/canvas/`
+  - 控制台/画布相关的静态内容或缓存
+- `~/.openclaw/browser/`
+  - OpenClaw 的浏览器控制服务/配置/缓存（如无需保留登录态，可不迁）
+- `~/.openclaw/cache/`、`~/.openclaw/tmp/`
+  - 缓存与临时文件
+
+### 系统服务配置（建议迁移一份，方便快速恢复）
+
+- `~/Library/LaunchAgents/ai.openclaw.*.plist`
+  - gateway / keepawake / 其他 OpenClaw 相关 LaunchAgent
+  - 新机上仍建议用 `openclaw gateway install` 重新安装服务（plist 主要用于参考/快速恢复）
+
+---
+
 ## 迁移提示
 
 把 `${HOME}/projects/migrate_to_new_device/claude-backups/` 整个目录带到新设备：
