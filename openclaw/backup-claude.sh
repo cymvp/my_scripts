@@ -82,8 +82,59 @@ CLAUDE_PROJECTS="${HOME}/.claude/projects"
 # ============================================================
 log "=== Backup started ==="
 
-# 1a. ~/.claude/ → claude-global/
-/usr/bin/rsync -a --update \
+# 1a. Symlink + cleanup, then backup ~/.claude/ → claude-global/.
+#     - Non-canonical machine: convert local-user dirs to symlinks → canonical dirs
+#     - All machines: delete foreign-user real dirs (useless leftovers from old restores)
+CANONICAL_USER="cuiyang"
+LOCAL_USER="$(whoami)"
+LOCAL_PREFIX="-Users-${LOCAL_USER}-"
+CANONICAL_PREFIX="-Users-${CANONICAL_USER}-"
+
+if [ "$LOCAL_USER" != "$CANONICAL_USER" ] && [ -d "${CLAUDE_PROJECTS}" ]; then
+    for local_dir in "${CLAUDE_PROJECTS}"/${LOCAL_PREFIX}*/; do
+        [ -d "$local_dir" ] || continue
+        [ -L "${local_dir%/}" ] && continue
+
+        local_name=$(basename "$local_dir")
+        canonical_name="${CANONICAL_PREFIX}${local_name#${LOCAL_PREFIX}}"
+        canonical_dir="${CLAUDE_PROJECTS}/${canonical_name}"
+        mkdir -p "$canonical_dir"
+        /usr/bin/rsync -a --update "${local_dir}" "${canonical_dir}/"
+
+        rm -rf "$local_dir"
+        ln -sf -- "${canonical_name}" "${local_dir%/}"
+        log "symlink: ${local_name} → ${canonical_name}"
+    done
+fi
+
+# Clean up non-canonical real dirs from local and backup (both machines).
+# Only canonical-user-encoded real dirs should exist; all others are stale leftovers.
+# (On machine B, local-user dirs are already symlinks and skipped by the -L check.)
+# Match both "-Users-cuiyang" (home dir) and "-Users-cuiyang-*" (project dirs).
+CANONICAL_HOME="-Users-${CANONICAL_USER}"
+
+if [ -d "${CLAUDE_PROJECTS}" ]; then
+    for dir in "${CLAUDE_PROJECTS}"/-Users-*/; do
+        [ -d "$dir" ] || continue
+        [ -L "${dir%/}" ] && continue
+        dname=$(basename "$dir")
+        [[ "$dname" == "${CANONICAL_HOME}" || "$dname" == ${CANONICAL_PREFIX}* ]] && continue
+        rm -rf "$dir"
+        log "cleanup local: removed ${dname}"
+    done
+fi
+if [ -d "${GLOBAL_DEST}/projects" ]; then
+    for dir in "${GLOBAL_DEST}/projects"/-Users-*/; do
+        [ -d "$dir" ] || continue
+        [ -L "${dir%/}" ] && continue
+        dname=$(basename "$dir")
+        [[ "$dname" == "${CANONICAL_HOME}" || "$dname" == ${CANONICAL_PREFIX}* ]] && continue
+        rm -rf "$dir"
+        log "cleanup backup: removed ${dname}"
+    done
+fi
+
+/usr/bin/rsync -a --update --no-links \
     --exclude='statsig/' \
     --exclude='.git/' \
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
@@ -110,6 +161,18 @@ mkdir -p "${OPENCLAW_MIRROR_DEST}/LaunchAgents"
 log "~/Library/LaunchAgents/ai.openclaw.*.plist -> ${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
 
 # 1d. Each project's .claude/ → claude-projects/<safe-name>/
+# Clean non-canonical dirs from claude-projects/ (safe_name has no leading dash)
+CANONICAL_SAFE_PREFIX="Users-${CANONICAL_USER}-"
+CANONICAL_SAFE_HOME="Users-${CANONICAL_USER}"
+if [ -d "${PROJECTS_DEST}" ]; then
+    for dir in "${PROJECTS_DEST}"/Users-*/; do
+        [ -d "$dir" ] || continue
+        dname=$(basename "$dir")
+        [[ "$dname" == "${CANONICAL_SAFE_HOME}" || "$dname" == ${CANONICAL_SAFE_PREFIX}* ]] && continue
+        rm -rf "$dir"
+        log "cleanup claude-projects: removed ${dname}"
+    done
+fi
 # Skip the home directory itself (e.g. "-Users-ycui" or "-Users-cuiyang")
 HOME_ENCODED=$(echo "${HOME}" | sed 's|/|-|g')
 if [ -d "${CLAUDE_PROJECTS}" ]; then
@@ -121,9 +184,15 @@ if [ -d "${CLAUDE_PROJECTS}" ]; then
 
         project_path=$(resolve_path "$dir_name")
         safe_name=$(echo "$dir_name" | sed 's/^-//')
+        # Normalize to canonical user prefix
+        if [ "$LOCAL_USER" != "$CANONICAL_USER" ]; then
+            safe_name="${safe_name/Users-${LOCAL_USER}-/Users-${CANONICAL_USER}-}"
+        fi
 
         if [ -d "${project_path}/.claude" ]; then
             dest="${PROJECTS_DEST}/${safe_name}"
+            # Remove broken symlink if present (leftover from old git history)
+            [ -L "${dest}" ] && rm -f "${dest}"
             mkdir -p "${dest}"
             /usr/bin/rsync -a --update --exclude='.git/' "${project_path}/.claude/" "${dest}/"
             log "  ${project_path}/.claude/ -> ${dest}/"
@@ -187,8 +256,20 @@ fi
 log "=== Restore started ==="
 
 # 4a. claude-global/ → ~/.claude/
+#     Clean non-canonical real dirs from backup that git pull may have brought back.
+if [ -d "${GLOBAL_DEST}/projects" ]; then
+    for dir in "${GLOBAL_DEST}/projects"/-Users-*/; do
+        [ -d "$dir" ] || continue
+        [ -L "${dir%/}" ] && continue
+        dname=$(basename "$dir")
+        [[ "$dname" == "${CANONICAL_HOME}" || "$dname" == ${CANONICAL_PREFIX}* ]] && continue
+        rm -rf "$dir"
+        log "cleanup backup (pre-restore): removed ${dname}"
+    done
+fi
+
 if [ -d "${GLOBAL_DEST}" ]; then
-    /usr/bin/rsync -a --update \
+    /usr/bin/rsync -a --update --no-links \
         --exclude='statsig/' \
         --exclude='.git/' \
         "${GLOBAL_DEST}/" "${HOME}/.claude/"
@@ -218,11 +299,26 @@ if [ -d "${OPENCLAW_MIRROR_DEST}/LaunchAgents" ]; then
 fi
 
 # 4d. claude-projects/ → each project's .claude/
+# Clean non-canonical dirs that git pull may have brought back
+if [ -d "${PROJECTS_DEST}" ]; then
+    for dir in "${PROJECTS_DEST}"/Users-*/; do
+        [ -d "$dir" ] || continue
+        dname=$(basename "$dir")
+        [[ "$dname" == "${CANONICAL_SAFE_HOME}" || "$dname" == ${CANONICAL_SAFE_PREFIX}* ]] && continue
+        rm -rf "$dir"
+        log "cleanup claude-projects (pre-restore): removed ${dname}"
+    done
+fi
 if [ -d "${PROJECTS_DEST}" ]; then
     for backup_entry in "${PROJECTS_DEST}"/*/; do
         [ -d "$backup_entry" ] || continue
         safe_name=$(basename "$backup_entry")
-        dir_name="-${safe_name}"
+        # Convert canonical prefix back to local prefix for path resolution
+        local_safe="${safe_name}"
+        if [ "$LOCAL_USER" != "$CANONICAL_USER" ]; then
+            local_safe="${safe_name/Users-${CANONICAL_USER}-/Users-${LOCAL_USER}-}"
+        fi
+        dir_name="-${local_safe}"
 
         project_path=$(resolve_path "$dir_name")
         if [ -d "${project_path}" ]; then
@@ -234,30 +330,6 @@ if [ -d "${PROJECTS_DEST}" ]; then
 fi
 
 log "=== Restore completed ==="
-
-# ============================================================
-# Phase 4.5: Symlink — ensure non-canonical machine uses canonical paths
-# ============================================================
-CANONICAL_USER="cuiyang"
-LOCAL_USER="$(whoami)"
-
-if [ "$LOCAL_USER" != "$CANONICAL_USER" ] && [ -d "${CLAUDE_PROJECTS}" ]; then
-    LOCAL_PREFIX="-Users-${LOCAL_USER}-"
-    CANONICAL_PREFIX="-Users-${CANONICAL_USER}-"
-
-    for local_dir in "${CLAUDE_PROJECTS}"/${LOCAL_PREFIX}*/; do
-        [ -d "$local_dir" ] || continue
-        [ -L "${local_dir%/}" ] && continue
-
-        local_name=$(basename "$local_dir")
-        canonical_dir="${CLAUDE_PROJECTS}/${CANONICAL_PREFIX}${local_name#${LOCAL_PREFIX}}"
-        mkdir -p "$canonical_dir"
-        /usr/bin/rsync -a --update "${local_dir}" "${canonical_dir}/"
-        rm -rf "$local_dir"
-        ln -sf "$(basename "$canonical_dir")" "${local_dir%/}"
-        log "symlink: $(basename "${local_dir%/}") → $(basename "$canonical_dir")"
-    done
-fi
 
 # ============================================================
 # Phase 5: Git push — upload merged result
