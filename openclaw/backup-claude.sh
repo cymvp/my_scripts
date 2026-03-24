@@ -141,16 +141,20 @@ fi
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
 # 1b. ~/.openclaw/ → openclaw-mirror/.openclaw/
-mkdir -p "${OPENCLAW_MIRROR_DEST}"
-/usr/bin/rsync -a --update \
-    --exclude='logs/' \
-    --exclude='canvas/' \
-    --exclude='browser/' \
-    --exclude='cache/' \
-    --exclude='tmp/' \
-    --exclude='.git/' \
-    "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
-log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (backup)"
+if [ -d "${HOME}/.openclaw" ]; then
+    mkdir -p "${OPENCLAW_MIRROR_DEST}"
+    /usr/bin/rsync -a --update \
+        --exclude='logs/' \
+        --exclude='canvas/' \
+        --exclude='browser/' \
+        --exclude='cache/' \
+        --exclude='tmp/' \
+        --exclude='.git/' \
+        "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
+    log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (backup)"
+else
+    log "~/.openclaw/ not found, skipping openclaw backup"
+fi
 
 # 1c. LaunchAgents → openclaw-mirror/LaunchAgents/
 mkdir -p "${OPENCLAW_MIRROR_DEST}/LaunchAgents"
