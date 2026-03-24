@@ -228,7 +228,7 @@ fi
 if [ -d "${REPO_ROOT}/.git" ]; then
     cd "${REPO_ROOT}"
 
-    if ! /usr/bin/git pull; then
+    if ! /usr/bin/git pull --no-rebase; then
         # Pull failed — try AI conflict resolution
         CONFLICTED=$(/usr/bin/git diff --name-only --diff-filter=U 2>/dev/null || true)
         if [ -n "$CONFLICTED" ]; then
