@@ -71,25 +71,61 @@ def og_image(url:str):
     except Exception:
         return None
 
+def _parse_xml(data: bytes):
+    """Parse RSS/Atom even if the response contains leading junk or multiple documents."""
+    txt = data.decode('utf-8', 'ignore')
+    # trim leading junk
+    starts = [txt.find('<rss'), txt.find('<feed')]
+    starts = [s for s in starts if s != -1]
+    if starts:
+        txt = txt[min(starts):]
+    # trim trailing junk by matching the last closing tag
+    end_rss = txt.rfind('</rss>')
+    end_feed = txt.rfind('</feed>')
+    end = max(end_rss, end_feed)
+    if end != -1:
+        if end == end_rss:
+            txt = txt[:end + len('</rss>')]
+        else:
+            txt = txt[:end + len('</feed>')]
+    return ET.fromstring(txt)
+
 def parse_rss(url, limit=60):
-    root=ET.fromstring(fetch(url))
+    root=_parse_xml(fetch(url))
     ch=root.find('channel')
     out=[]
-    for it in ch.findall('item')[:limit]:
-        title=strip_html(it.findtext('title',''))
-        link=strip_html(it.findtext('link',''))
-        desc=strip_html(it.findtext('description',''))
-        img=None
-        enc=it.find('enclosure')
-        if enc is not None and enc.get('url'):
-            img=enc.get('url')
-        thumb=it.find('media:thumbnail', NS)
-        if img is None and thumb is not None and thumb.get('url'):
-            img=thumb.get('url')
-        m=it.find('media:content', NS)
-        if img is None and m is not None and m.get('url'):
-            img=m.get('url')
-        out.append({'title':title,'link':link,'desc':desc,'img':img})
+
+    # RSS
+    if ch is not None:
+        for it in ch.findall('item')[:limit]:
+            title=strip_html(it.findtext('title',''))
+            link=strip_html(it.findtext('link',''))
+            desc=strip_html(it.findtext('description',''))
+            img=None
+            enc=it.find('enclosure')
+            if enc is not None and enc.get('url'):
+                img=enc.get('url')
+            thumb=it.find('media:thumbnail', NS)
+            if img is None and thumb is not None and thumb.get('url'):
+                img=thumb.get('url')
+            m=it.find('media:content', NS)
+            if img is None and m is not None and m.get('url'):
+                img=m.get('url')
+            out.append({'title':title,'link':link,'desc':desc,'img':img})
+        return out
+
+    # Atom
+    for it in root.findall('.//{*}entry')[:limit]:
+        title=strip_html(it.findtext('{*}title',''))
+        desc=strip_html(it.findtext('{*}summary',''))
+        link=''
+        for lk in it.findall('{*}link'):
+            href=lk.get('href')
+            rel=lk.get('rel','')
+            if href and (rel in ('alternate','') ):
+                link=href
+                break
+        out.append({'title':title,'link':link,'desc':desc,'img':None})
     return out
 
 feeds={
