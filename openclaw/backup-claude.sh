@@ -236,6 +236,30 @@ fi
 log "=== Restore completed ==="
 
 # ============================================================
+# Phase 4.5: Symlink — ensure non-canonical machine uses canonical paths
+# ============================================================
+CANONICAL_USER="cuiyang"
+LOCAL_USER="$(whoami)"
+
+if [ "$LOCAL_USER" != "$CANONICAL_USER" ] && [ -d "${CLAUDE_PROJECTS}" ]; then
+    LOCAL_PREFIX="-Users-${LOCAL_USER}-"
+    CANONICAL_PREFIX="-Users-${CANONICAL_USER}-"
+
+    for local_dir in "${CLAUDE_PROJECTS}"/${LOCAL_PREFIX}*/; do
+        [ -d "$local_dir" ] || continue
+        [ -L "${local_dir%/}" ] && continue
+
+        local_name=$(basename "$local_dir")
+        canonical_dir="${CLAUDE_PROJECTS}/${CANONICAL_PREFIX}${local_name#${LOCAL_PREFIX}}"
+        mkdir -p "$canonical_dir"
+        /usr/bin/rsync -a --update "${local_dir}" "${canonical_dir}/"
+        rm -rf "$local_dir"
+        ln -sf "$(basename "$canonical_dir")" "${local_dir%/}"
+        log "symlink: $(basename "${local_dir%/}") → $(basename "$canonical_dir")"
+    done
+fi
+
+# ============================================================
 # Phase 5: Git push — upload merged result
 # ============================================================
 if [ -d "${REPO_ROOT}/.git" ]; then
