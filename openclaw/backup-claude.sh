@@ -1,17 +1,26 @@
 #!/bin/bash
 set -euo pipefail
 
-# Backup all Claude Code data to a centralized location for cloud sync.
+# Ensure HOME is set (launchd does not guarantee it)
+HOME="${HOME:-$(dscl . -read /Users/"$(whoami)" NFSHomeDirectory | awk '{print $2}')}"
+export HOME
+
+# Sync Claude Code and OpenClaw data across machines via a shared git repo.
 #
-# Two backup targets:
-#   1. claude-global/    ← ~/.claude/ (global config, memory, transcripts)
-#   2. claude-projects/  ← each project's .claude/ (CLAUDE.md, settings.json)
+# Flow: backup → commit → pull (merge) → restore → push
+#
+# Three sync targets:
+#   1. claude-global/    ↔ ~/.claude/ (global config, memory, transcripts)
+#   2. claude-projects/  ↔ each project's .claude/ (CLAUDE.md, settings.json)
+#   3. openclaw-mirror/  ↔ ~/.openclaw/ (config, sessions) + LaunchAgents plists
+#
+# All rsync operations use --update (only overwrite if source is newer),
+# so neither machine deletes or overwrites the other's newer data.
 #
 # Project paths are resolved from ~/.claude/projects/ directory names.
-# e.g. "-Users-cuiyang-projects-umu-csrs" → /Users/cuiyang/projects/umu/csrs
+# e.g. "-Users-ycui-projects-umu-csrs" → /Users/ycui/projects/umu/csrs
 #
 # Usage: ./backup-claude.sh
-# Recommended: crontab -e → 0 2 * * * /Users/cuiyang/scripts/backup-claude.sh
 
 BACKUP_ROOT="${HOME}/projects/migrate_to_new_device/claude-backups"
 GLOBAL_DEST="${BACKUP_ROOT}/claude-global"
@@ -19,8 +28,6 @@ PROJECTS_DEST="${BACKUP_ROOT}/claude-projects"
 LOG_DIR="${HOME}/projects/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/backup-claude.log"
-
-OPENCLAW_BIN="${HOME}/.npm-global/bin/openclaw"
 
 mkdir -p "${GLOBAL_DEST}" "${PROJECTS_DEST}"
 
@@ -65,47 +72,52 @@ resolve_path() {
     echo "$current"
 }
 
+OPENCLAW_MIRROR_DEST="${HOME}/projects/migrate_to_new_device/openclaw-mirror"
+REPO_ROOT="${HOME}/projects/migrate_to_new_device"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLAUDE_PROJECTS="${HOME}/.claude/projects"
+
+# ============================================================
+# Phase 1: Backup — local → backup (save local state first)
+# ============================================================
 log "=== Backup started ==="
 
-# 1. ~/.claude/ → claude-global/
-/usr/bin/rsync -a --delete \
+# 1a. ~/.claude/ → claude-global/
+/usr/bin/rsync -a --update \
     --exclude='statsig/' \
+    --exclude='.git/' \
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
-# 1b. OpenClaw incremental mirror (single directory, rsync-based)
-# Goal: migrate to a new machine and keep working seamlessly, without creating a new archive every run.
-OPENCLAW_MIRROR_DEST="${HOME}/projects/migrate_to_new_device/openclaw-mirror"
+# 1b. ~/.openclaw/ → openclaw-mirror/.openclaw/
 mkdir -p "${OPENCLAW_MIRROR_DEST}"
-
-# Mirror ~/.openclaw (config, sessions, workspace, etc.)
-# Exclude volatile/large caches and logs that are not required for migration.
-/usr/bin/rsync -a --delete \
+/usr/bin/rsync -a --update \
     --exclude='logs/' \
     --exclude='canvas/' \
     --exclude='browser/' \
     --exclude='cache/' \
     --exclude='tmp/' \
-    --exclude='workspace*/.git/' \
+    --exclude='.git/' \
     "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
-log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (incremental mirror)"
+log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (backup)"
 
-# Also mirror the LaunchAgents plists (so a new machine can re-install services quickly)
+# 1c. LaunchAgents → openclaw-mirror/LaunchAgents/
 mkdir -p "${OPENCLAW_MIRROR_DEST}/LaunchAgents"
-/usr/bin/rsync -a --delete \
+/usr/bin/rsync -a --update \
     --include='ai.openclaw.*.plist' \
     --exclude='*' \
     "${HOME}/Library/LaunchAgents/" "${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
 log "~/Library/LaunchAgents/ai.openclaw.*.plist -> ${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
 
-# 2. Each project's .claude/ → claude-projects/<safe-name>/
-CLAUDE_PROJECTS="${HOME}/.claude/projects"
+# 1d. Each project's .claude/ → claude-projects/<safe-name>/
+# Skip the home directory itself (e.g. "-Users-ycui" or "-Users-cuiyang")
+HOME_ENCODED=$(echo "${HOME}" | sed 's|/|-|g')
 if [ -d "${CLAUDE_PROJECTS}" ]; then
     for entry in "${CLAUDE_PROJECTS}"/*/; do
         [ -d "$entry" ] || continue
         dir_name=$(basename "$entry")
         [[ "$dir_name" == .* ]] && continue
-        [[ "$dir_name" == "-Users-cuiyang" ]] && continue
+        [[ "$dir_name" == "$HOME_ENCODED" ]] && continue
 
         project_path=$(resolve_path "$dir_name")
         safe_name=$(echo "$dir_name" | sed 's/^-//')
@@ -113,7 +125,7 @@ if [ -d "${CLAUDE_PROJECTS}" ]; then
         if [ -d "${project_path}/.claude" ]; then
             dest="${PROJECTS_DEST}/${safe_name}"
             mkdir -p "${dest}"
-            /usr/bin/rsync -a --delete "${project_path}/.claude/" "${dest}/"
+            /usr/bin/rsync -a --update --exclude='.git/' "${project_path}/.claude/" "${dest}/"
             log "  ${project_path}/.claude/ -> ${dest}/"
         fi
     done
@@ -121,73 +133,120 @@ fi
 
 log "=== Backup completed ==="
 
-# --- Git sync (stash → pull → stash pop → commit → push) ---
-# Repo root that is synced to GitHub.
-REPO_ROOT="${HOME}/projects/migrate_to_new_device"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# ============================================================
+# Phase 2: Git commit — save local backup into git
+# ============================================================
+HOSTNAME_SHORT=$(scutil --get LocalHostName 2>/dev/null || hostname)
+TS=$(date '+%Y-%m-%d %H:%M:%S')
 
 if [ -d "${REPO_ROOT}/.git" ]; then
     cd "${REPO_ROOT}"
 
-    HOSTNAME_SHORT=$(scutil --get LocalHostName 2>/dev/null || hostname)
-    TS=$(date '+%Y-%m-%d %H:%M:%S')
-
-    # 1) Stash local backup changes (if any)
-    /usr/bin/git add -A
-    STASHED=false
-    if ! /usr/bin/git diff --cached --quiet; then
-        /usr/bin/git stash push -m "backup-stash: ${HOSTNAME_SHORT} ${TS}"
-        STASHED=true
-        log "git stash: local changes stashed"
-    else
-        log "git: no local changes to stash"
-    fi
-
-    # 2) Pull remote changes (fast-forward or merge, no rebase needed)
-    if ! /usr/bin/git pull; then
-        log "git pull failed. Please check remote auth/connectivity."
-        if $STASHED; then
-            /usr/bin/git stash pop || true
-        fi
-        exit 2
-    fi
-    log "git pull: remote changes pulled"
-
-    # 3) Pop stash and resolve conflicts if any
-    if $STASHED; then
-        if /usr/bin/git stash pop 2>/dev/null; then
-            log "git stash pop: clean, no conflicts"
-        else
-            log "git stash pop: conflicts detected — invoking AI resolver"
-            # stash pop conflicts leave files with conflict markers in the working tree
-            CONFLICTED=$(/usr/bin/git diff --name-only --diff-filter=U 2>/dev/null || true)
-            if [ -n "$CONFLICTED" ]; then
-                if ! "${SCRIPT_DIR}/resolve-conflicts-with-ai.sh" "${LOG_FILE}"; then
-                    log "AI conflict resolution failed. Reverting stash pop."
-                    /usr/bin/git checkout -- . 2>/dev/null || true
-                    /usr/bin/git stash drop 2>/dev/null || true
-                    exit 2
-                fi
-            fi
-        fi
-    fi
-
-    # 4) Commit all changes
     /usr/bin/git add -A
     if ! /usr/bin/git diff --cached --quiet; then
         /usr/bin/git commit -m "backup: ${HOSTNAME_SHORT} ${TS}" || true
         log "git commit created"
     else
-        log "git: no changes to commit"
+        log "git: no local changes to commit"
     fi
+else
+    log "git commit skipped: ${REPO_ROOT} is not a git repo"
+fi
 
-    # 5) Push
+# ============================================================
+# Phase 3: Git pull — merge with the other machine's backup
+# ============================================================
+if [ -d "${REPO_ROOT}/.git" ]; then
+    cd "${REPO_ROOT}"
+
+    if ! /usr/bin/git pull; then
+        # Pull failed — try AI conflict resolution
+        CONFLICTED=$(/usr/bin/git diff --name-only --diff-filter=U 2>/dev/null || true)
+        if [ -n "$CONFLICTED" ]; then
+            log "git pull: conflicts detected — invoking AI resolver"
+            if ! "${SCRIPT_DIR}/resolve-conflicts-with-ai.sh" "${LOG_FILE}"; then
+                log "AI conflict resolution failed. Please resolve manually."
+                exit 2
+            fi
+            /usr/bin/git add -A
+            /usr/bin/git commit -m "backup: ${HOSTNAME_SHORT} ${TS} (merge resolved)" || true
+            log "git merge conflicts resolved"
+        else
+            log "git pull failed. Please check remote auth/connectivity."
+            exit 2
+        fi
+    fi
+    log "git pull: remote changes merged"
+else
+    log "git pull skipped: ${REPO_ROOT} is not a git repo"
+fi
+
+# ============================================================
+# Phase 4: Restore — backup → local (apply the other machine's changes)
+# ============================================================
+log "=== Restore started ==="
+
+# 4a. claude-global/ → ~/.claude/
+if [ -d "${GLOBAL_DEST}" ]; then
+    /usr/bin/rsync -a --update \
+        --exclude='statsig/' \
+        --exclude='.git/' \
+        "${GLOBAL_DEST}/" "${HOME}/.claude/"
+    log "${GLOBAL_DEST}/ -> ~/.claude/ (restore)"
+fi
+
+# 4b. openclaw-mirror/.openclaw/ → ~/.openclaw/
+if [ -d "${OPENCLAW_MIRROR_DEST}/.openclaw" ]; then
+    /usr/bin/rsync -a --update \
+        --exclude='logs/' \
+        --exclude='canvas/' \
+        --exclude='browser/' \
+        --exclude='cache/' \
+        --exclude='tmp/' \
+        --exclude='.git/' \
+        "${OPENCLAW_MIRROR_DEST}/.openclaw/" "${HOME}/.openclaw/"
+    log "${OPENCLAW_MIRROR_DEST}/.openclaw/ -> ~/.openclaw/ (restore)"
+fi
+
+# 4c. openclaw-mirror/LaunchAgents/ → ~/Library/LaunchAgents/
+if [ -d "${OPENCLAW_MIRROR_DEST}/LaunchAgents" ]; then
+    /usr/bin/rsync -a --update \
+        --include='ai.openclaw.*.plist' \
+        --exclude='*' \
+        "${OPENCLAW_MIRROR_DEST}/LaunchAgents/" "${HOME}/Library/LaunchAgents/"
+    log "${OPENCLAW_MIRROR_DEST}/LaunchAgents/ -> ~/Library/LaunchAgents/ (restore)"
+fi
+
+# 4d. claude-projects/ → each project's .claude/
+if [ -d "${PROJECTS_DEST}" ]; then
+    for backup_entry in "${PROJECTS_DEST}"/*/; do
+        [ -d "$backup_entry" ] || continue
+        safe_name=$(basename "$backup_entry")
+        dir_name="-${safe_name}"
+
+        project_path=$(resolve_path "$dir_name")
+        if [ -d "${project_path}" ]; then
+            mkdir -p "${project_path}/.claude"
+            /usr/bin/rsync -a --update --exclude='.git/' "${backup_entry}" "${project_path}/.claude/"
+            log "  ${backup_entry} -> ${project_path}/.claude/ (restore)"
+        fi
+    done
+fi
+
+log "=== Restore completed ==="
+
+# ============================================================
+# Phase 5: Git push — upload merged result
+# ============================================================
+if [ -d "${REPO_ROOT}/.git" ]; then
+    cd "${REPO_ROOT}"
+
     if ! /usr/bin/git push; then
         log "git push failed. Please check remote auth/connectivity."
         exit 3
     fi
 
-    log "git sync completed (stash → pull → pop → commit → push)"
+    log "git sync completed (backup → commit → pull → restore → push)"
 else
     log "git sync skipped: ${REPO_ROOT} is not a git repo"
 fi
