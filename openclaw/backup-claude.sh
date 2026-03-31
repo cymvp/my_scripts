@@ -9,16 +9,39 @@ export HOME
 #
 # Flow: backup → commit → pull (merge) → restore → push
 #
+# The order is intentional and cannot be rearranged:
+#   - backup+commit MUST come before pull: git pull requires a clean working
+#     tree, and local changes must be committed first so git can 3-way merge.
+#   - restore MUST come after pull: the repo holds the merged result of both
+#     machines' data after pull, so restore applies that merged state locally.
+#
 # Three sync targets:
 #   1. claude-global/    ↔ ~/.claude/ (global config, memory, transcripts)
 #   2. claude-projects/  ↔ each project's .claude/ (CLAUDE.md, settings.json)
 #   3. openclaw-mirror/  ↔ ~/.openclaw/ (config, sessions) + LaunchAgents plists
 #
-# All rsync operations use --update (only overwrite if source is newer),
-# so neither machine deletes or overwrites the other's newer data.
+# rsync strategy:
+#   - Backup (local → repo):  rsync --update (no --delete)
+#     Preserves files in repo that don't exist locally (e.g. from the other
+#     machine). This is critical: a stale machine must not wipe the other
+#     machine's newer files from the repo before git merge can see them.
+#   - Restore (repo → local): rsync --delete
+#     After pull+merge, the repo is the authoritative merged state. Files
+#     removed from the repo (by git merge) should also be removed locally.
+#
+# Delete propagation:
+#   - Remote deletes propagate automatically: the other machine deletes a
+#     file → their commit removes it from repo → pull merges → restore
+#     --delete removes it from local.
+#   - Local deletes do NOT propagate via backup alone. To delete a file
+#     across all machines: remove it from BOTH local (~/.claude/xxx) AND
+#     the repo dir (claude-backups/claude-global/xxx), then sync.
 #
 # Project paths are resolved from ~/.claude/projects/ directory names.
 # e.g. "-Users-ycui-projects-umu-csrs" → /Users/ycui/projects/umu/csrs
+#
+# Tests: ./test-backup-claude.sh
+# Docs:  ./backup-claude.md
 #
 # Usage: ./backup-claude.sh
 
@@ -260,6 +283,19 @@ fi
 log "=== Restore started ==="
 
 # 4a. claude-global/ → ~/.claude/
+#     Restore uses --delete so that files deleted from the repo (by the other
+#     machine or manually) are also removed locally.  This is safe because
+#     Phase 1 (backup) already saved local state into the repo, and Phase 3
+#     (pull) merged the remote's changes, so the repo now holds the authoritative
+#     merged result.
+#
+#     NOTE on delete propagation:
+#     - Remote deletes propagate automatically: pull removes the file from the
+#       repo, then restore --delete removes it from local.
+#     - Local deletes do NOT propagate via backup alone (no --delete on backup).
+#       To propagate a local delete: remove the file from BOTH local (~/.claude/)
+#       AND the repo dir (claude-backups/claude-global/), then sync.
+#
 #     Clean non-canonical real dirs from backup that git pull may have brought back.
 if [ -d "${GLOBAL_DEST}/projects" ]; then
     for dir in "${GLOBAL_DEST}/projects"/-Users-*/; do
@@ -273,7 +309,7 @@ if [ -d "${GLOBAL_DEST}/projects" ]; then
 fi
 
 if [ -d "${GLOBAL_DEST}" ]; then
-    /usr/bin/rsync -a --update --no-links \
+    /usr/bin/rsync -a --delete --no-links \
         --exclude='statsig/' \
         --exclude='.git/' \
         "${GLOBAL_DEST}/" "${HOME}/.claude/"
@@ -282,7 +318,7 @@ fi
 
 # 4b. openclaw-mirror/.openclaw/ → ~/.openclaw/
 if [ -d "${OPENCLAW_MIRROR_DEST}/.openclaw" ]; then
-    /usr/bin/rsync -a --update \
+    /usr/bin/rsync -a --delete \
         --exclude='logs/' \
         --exclude='canvas/' \
         --exclude='browser/' \
@@ -294,6 +330,8 @@ if [ -d "${OPENCLAW_MIRROR_DEST}/.openclaw" ]; then
 fi
 
 # 4c. openclaw-mirror/LaunchAgents/ → ~/Library/LaunchAgents/
+#     LaunchAgents keeps --update (no --delete): this dir contains other plists
+#     we must not touch; --include/--exclude already scopes to ai.openclaw.* only.
 if [ -d "${OPENCLAW_MIRROR_DEST}/LaunchAgents" ]; then
     /usr/bin/rsync -a --update \
         --include='ai.openclaw.*.plist' \
@@ -317,6 +355,11 @@ if [ -d "${PROJECTS_DEST}" ]; then
     for backup_entry in "${PROJECTS_DEST}"/*/; do
         [ -d "$backup_entry" ] || continue
         safe_name=$(basename "$backup_entry")
+        # Skip the home directory — already handled by Phase 4a (claude-global).
+        # safe_name is e.g. "Users-cuiyang", HOME_ENCODED is "-Users-cuiyang";
+        # compare without the leading dash.
+        [[ "-${safe_name}" == "$HOME_ENCODED" ]] && continue
+
         # Convert canonical prefix back to local prefix for path resolution
         local_safe="${safe_name}"
         if [ "$LOCAL_USER" != "$CANONICAL_USER" ]; then
@@ -327,7 +370,7 @@ if [ -d "${PROJECTS_DEST}" ]; then
         project_path=$(resolve_path "$dir_name")
         if [ -d "${project_path}" ]; then
             mkdir -p "${project_path}/.claude"
-            /usr/bin/rsync -a --update --exclude='.git/' "${backup_entry}" "${project_path}/.claude/"
+            /usr/bin/rsync -a --delete --exclude='.git/' "${backup_entry}" "${project_path}/.claude/"
             log "  ${backup_entry} -> ${project_path}/.claude/ (restore)"
         fi
     done
