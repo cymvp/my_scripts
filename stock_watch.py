@@ -109,24 +109,31 @@ def _build_app():
         def __init__(self):
             super().__init__()
             self.title("")
-            self.attributes("-topmost", True)
+            self.overrideredirect(True)            # 去掉原生标题栏
             self.attributes("-transparent", True)  # 透明背景，只剩文字
+            self.attributes("-topmost", True)
             self.configure(bg=BG)
             self.resizable(False, False)
+            self.geometry("+200+100")              # 无边框时给个初始位置，避免落在 0,0
+            self.bind("<Escape>", lambda e: self.destroy())
 
             self.codes = load_config()
             self.quotes = {}          # code -> 最近一次有效行情
             self.rows = {}            # code -> (name_label, pct_label)
             self._drag_code = None    # 正在拖动的股票代码
+            self._win_off = (0, 0)    # 拖动窗口时的指针偏移
+            self._status_text = ""    # 最近一次状态文字
+            self._status_color = FLAT_COLOR
+            self.status = None        # 最左边的时间标签，在 _render_rows 中创建
 
             # 股票行容器（横向铺开，末尾带 + 按钮）
             self.body = tk.Frame(self, bg=BG)
             self.body.pack(fill="both", padx=6, pady=(6, 2))
 
             # 底部状态
-            self.status = tk.Label(self, text="", bg=BG, fg=FLAT_COLOR,
-                                   font=("Menlo", 9), anchor="w")
-            self.status.pack(fill="x", padx=6, pady=(0, 4))
+            # 右键退出菜单（挂在最左边的时间上）
+            self._menu = tk.Menu(self, tearoff=0)
+            self._menu.add_command(label="退出", command=self.destroy)
 
             self._render_rows()
             self.refresh()
@@ -147,11 +154,42 @@ def _build_app():
             self._render_rows()
             self.refresh()
 
-        def _on_remove(self, code):
-            self.codes.remove(code)
-            self.quotes.pop(code, None)
-            save_config(self.codes)
-            self._render_rows()
+        def _prompt_delete(self):
+            """弹出列表，勾选要删除的股票，确认后批量删除。"""
+            if not self.codes:
+                return
+            win = tk.Toplevel(self)
+            win.title("删除自选")
+            win.attributes("-topmost", True)
+            win.configure(padx=14, pady=12)
+            tk.Label(win, text="勾选要删除的股票：").pack(anchor="w", pady=(0, 6))
+            checks = {}
+            for code in self.codes:
+                name = self.quotes.get(code, {}).get("name", code)
+                var = tk.BooleanVar()
+                checks[code] = var
+                tk.Checkbutton(win, text=f"{name}  ({code})", variable=var,
+                               anchor="w").pack(fill="x")
+
+            def do_delete():
+                remove = [c for c, v in checks.items() if v.get()]
+                for c in remove:
+                    self.codes.remove(c)
+                    self.quotes.pop(c, None)
+                if remove:
+                    save_config(self.codes)
+                    self._render_rows()
+                win.destroy()
+
+            tk.Button(win, text="确认删除", command=do_delete).pack(pady=(10, 0))
+
+        def _win_press(self, event):
+            self._win_off = (event.x_root - self.winfo_x(),
+                             event.y_root - self.winfo_y())
+
+        def _win_move(self, event):
+            ox, oy = self._win_off
+            self.geometry(f"+{event.x_root - ox}+{event.y_root - oy}")
 
         def _drag_start(self, code):
             self._drag_code = code
@@ -183,9 +221,18 @@ def _build_app():
             for child in self.body.winfo_children():
                 child.destroy()
             self.rows = {}
+            # 最左边：时间（兼作拖动手柄 + 右键退出）
+            self.status = tk.Label(self.body, bg=BG, font=("Menlo", 11),
+                                   cursor="fleur", text=self._status_text,
+                                   fg=self._status_color)
+            self.status.pack(side="left", padx=(0, 10))
+            self.status.bind("<ButtonPress-1>", self._win_press)
+            self.status.bind("<B1-Motion>", self._win_move)
+            for btn in ("<Button-2>", "<Button-3>"):
+                self.status.bind(btn, lambda e: self._menu.tk_popup(e.x_root, e.y_root))
             for code in self.codes:
                 cell = tk.Frame(self.body, bg=BG)
-                cell.pack(side="left", padx=6, pady=1)
+                cell.pack(side="left", padx=3, pady=1)
                 name = tk.Label(cell, bg=BG, fg=NAME_COLOR, font=("Menlo", 12),
                                 cursor="pointinghand")
                 name.pack(side="left")
@@ -195,16 +242,16 @@ def _build_app():
                 pct = tk.Label(cell, bg=BG, fg=FLAT_COLOR,
                                font=("Menlo", 12, "bold"))
                 pct.pack(side="left", padx=(3, 0))
-                close = tk.Label(cell, text="✕", bg=BG, fg="#555",
-                                 font=("Menlo", 8), cursor="pointinghand")
-                close.pack(side="left", padx=(2, 0))
-                close.bind("<Button-1>", lambda e, c=code: self._on_remove(c))
                 self.rows[code] = (name, pct)
-            # 末尾：+ 添加（用 Label 避免 macOS 按钮自带的方框）
+            # 末尾：+ 添加 / − 删除（无边框 Label，避免 macOS 按钮方框）
             plus = tk.Label(self.body, text="+", bg=BG, fg=NAME_COLOR,
                             font=("Menlo", 15), cursor="pointinghand")
-            plus.pack(side="left", padx=(8, 2))
+            plus.pack(side="left", padx=(10, 2))
             plus.bind("<Button-1>", lambda e: self._prompt_add())
+            minus = tk.Label(self.body, text="−", bg=BG, fg=NAME_COLOR,
+                             font=("Menlo", 15), cursor="pointinghand")
+            minus.pack(side="left", padx=(2, 4))
+            minus.bind("<Button-1>", lambda e: self._prompt_delete())
             self._update_labels()
 
         def _update_labels(self):
@@ -227,14 +274,18 @@ def _build_app():
             try:
                 quotes = fetch_quotes(self.codes)
                 self.quotes = {q["code"]: q for q in quotes}
-                self.status.config(text=f"● {time.strftime('%H:%M:%S')} 已更新",
-                                   fg=DOWN_COLOR)
+                self._set_status(f"● {time.strftime('%H:%M')}", DOWN_COLOR)
             except Exception:
                 # 网络/接口失败：保留上次价格，仅标记未更新
-                self.status.config(text=f"⚠ {time.strftime('%H:%M:%S')} 未更新",
-                                   fg=UP_COLOR)
+                self._set_status(f"⚠ {time.strftime('%H:%M')}", UP_COLOR)
             self._update_labels()
             self.after(REFRESH_MS, self.refresh)
+
+        def _set_status(self, text, color):
+            self._status_text = text
+            self._status_color = color
+            if self.status is not None:
+                self.status.config(text=text, fg=color)
 
     return StockWatch()
 
