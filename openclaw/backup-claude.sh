@@ -221,7 +221,7 @@ if [ -d "${CLAUDE_PROJECTS}" ]; then
             # Remove broken symlink if present (leftover from old git history)
             [ -L "${dest}" ] && rm -f "${dest}"
             mkdir -p "${dest}"
-            /usr/bin/rsync -a --update --exclude='.git/' "${project_path}/.claude/" "${dest}/"
+            /usr/bin/rsync -a --update --exclude='.git' --exclude='worktrees/' "${project_path}/.claude/" "${dest}/"
             log "  ${project_path}/.claude/ -> ${dest}/"
         fi
     done
@@ -370,7 +370,7 @@ if [ -d "${PROJECTS_DEST}" ]; then
         project_path=$(resolve_path "$dir_name")
         if [ -d "${project_path}" ]; then
             mkdir -p "${project_path}/.claude"
-            /usr/bin/rsync -a --delete --exclude='.git/' "${backup_entry}" "${project_path}/.claude/"
+            /usr/bin/rsync -a --delete --exclude='.git' --exclude='worktrees/' "${backup_entry}" "${project_path}/.claude/"
             log "  ${backup_entry} -> ${project_path}/.claude/ (restore)"
         fi
     done
