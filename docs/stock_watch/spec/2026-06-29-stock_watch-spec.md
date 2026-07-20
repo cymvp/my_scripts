@@ -71,7 +71,7 @@ var hq_str_sh600519="贵州茅台,1169.000,1168.630,1195.010,1215.000,1151.010,.
 | 部分 | 职责 | 输入 → 输出 | 测试方式 |
 |------|------|------------|---------|
 | 行情解析 | 代码 → 拉接口 → 解析 | `["sh600519"]` → `[{code, name, change_pct, ok}]` | 纯函数，mock 新浪返回字符串做单测 |
-| 配置存储 | 读写自选列表 | `~/.stock_watch.json` ↔ `["600519", ...]` | 临时文件做单测 |
+| 配置存储 | 读写自选列表 | 脚本同目录 `stock_watch.json` ↔ `["600519", ...]` | 临时文件做单测 |
 | 界面 | tkinter 置顶窗 + 定时刷新 | — | 手动验证 |
 
 ### 关键函数（拟）
@@ -87,7 +87,7 @@ def parse_sina_response(text: str) -> list[dict]:
 def fetch_quotes(codes: list[str]) -> list[dict]:
     """批量拉行情；网络异常时抛异常，由界面层捕获"""
 
-def load_config() -> list[str]:    # 读 ~/.stock_watch.json，不存在返回 []
+def load_config() -> list[str]:    # 读脚本同目录 stock_watch.json，不存在返回 []
 def save_config(codes: list[str])  # 写回
 ```
 

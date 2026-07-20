@@ -153,3 +153,10 @@ def test_config_saved_as_json(tmp_path):
     path = tmp_path / "cfg.json"
     sw.save_config(["600519"], path=str(path))
     assert json.loads(path.read_text()) == ["600519"]
+
+
+def test_config_default_path_in_script_dir():
+    # 默认配置跟随脚本目录（随仓库走），不再放 home 目录
+    import os
+    assert os.path.dirname(sw.CONFIG_PATH) == os.path.dirname(os.path.abspath(sw.__file__))
+    assert os.path.basename(sw.CONFIG_PATH) == "stock_watch.json"

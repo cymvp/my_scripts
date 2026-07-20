@@ -10,7 +10,7 @@ import urllib.request
 
 SINA_URL = "https://hq.sinajs.cn/list="
 SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}
-CONFIG_PATH = os.path.expanduser("~/.stock_watch.json")
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_watch.json")
 REFRESH_MS = 3000  # 3 秒刷新，贴合新浪 L1 快照周期
 
 _SINA_LINE = re.compile(r'hq_str_(\w+)="([^"]*)"')
