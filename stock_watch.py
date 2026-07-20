@@ -25,9 +25,9 @@ def normalize_code(raw):
         return "hk" + code
     if len(code) == 6:
         head = code[0]
-        if head in "69":
+        if head in "695":  # 5 开头: 沪市基金/ETF
             return "sh" + code
-        if head in "023":
+        if head in "0231":  # 1 开头: 深市基金/ETF/LOF
             return "sz" + code
         if head in "48":
             return "bj" + code

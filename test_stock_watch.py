@@ -47,6 +47,18 @@ def test_normalize_code_hongkong():
     assert sw.normalize_code("00700") == "hk00700"
 
 
+def test_normalize_code_sh_etf():
+    # 沪市基金/ETF: 5 开头
+    assert sw.normalize_code("513120") == "sh513120"
+    assert sw.normalize_code("510300") == "sh510300"
+
+
+def test_normalize_code_sz_etf():
+    # 深市基金/ETF/LOF: 1 开头
+    assert sw.normalize_code("159915") == "sz159915"
+    assert sw.normalize_code("161725") == "sz161725"
+
+
 # --- parse_sina_response ------------------------------------------------
 
 def _sina_line(code, name, prev_close, current):
