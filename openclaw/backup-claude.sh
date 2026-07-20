@@ -95,7 +95,7 @@ resolve_path() {
     echo "$current"
 }
 
-OPENCLAW_MIRROR_DEST="${HOME}/projects/migrate_to_new_device/openclaw-mirror"
+# openclaw-mirror/: frozen archive in the repo (openclaw uninstalled 2026-07-17)
 REPO_ROOT="${HOME}/projects/migrate_to_new_device"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_PROJECTS="${HOME}/.claude/projects"
@@ -160,32 +160,13 @@ fi
 /usr/bin/rsync -a --update --no-links \
     --exclude='statsig/' \
     --exclude='.git/' \
+    --exclude='*.sock' \
+    --exclude='remote/' \
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
-# 1b. ~/.openclaw/ → openclaw-mirror/.openclaw/
-if [ -d "${HOME}/.openclaw" ]; then
-    mkdir -p "${OPENCLAW_MIRROR_DEST}"
-    /usr/bin/rsync -a --update \
-        --exclude='logs/' \
-        --exclude='canvas/' \
-        --exclude='browser/' \
-        --exclude='cache/' \
-        --exclude='tmp/' \
-        --exclude='.git/' \
-        "${HOME}/.openclaw/" "${OPENCLAW_MIRROR_DEST}/.openclaw/"
-    log "~/.openclaw/ -> ${OPENCLAW_MIRROR_DEST}/.openclaw/ (backup)"
-else
-    log "~/.openclaw/ not found, skipping openclaw backup"
-fi
-
-# 1c. LaunchAgents → openclaw-mirror/LaunchAgents/
-mkdir -p "${OPENCLAW_MIRROR_DEST}/LaunchAgents"
-/usr/bin/rsync -a --update \
-    --include='ai.openclaw.*.plist' \
-    --exclude='*' \
-    "${HOME}/Library/LaunchAgents/" "${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
-log "~/Library/LaunchAgents/ai.openclaw.*.plist -> ${OPENCLAW_MIRROR_DEST}/LaunchAgents/"
+# 1b/1c. openclaw backup removed 2026-07-17: openclaw uninstalled.
+#        openclaw-mirror/ in the repo is kept as a frozen archive of the last state.
 
 # 1d. Each project's .claude/ → claude-projects/<safe-name>/
 # Clean non-canonical dirs from claude-projects/ (safe_name has no leading dash)
@@ -312,33 +293,15 @@ if [ -d "${GLOBAL_DEST}" ]; then
     /usr/bin/rsync -a --delete --no-links \
         --exclude='statsig/' \
         --exclude='.git/' \
+        --exclude='*.sock' \
+        --exclude='remote/' \
         "${GLOBAL_DEST}/" "${HOME}/.claude/"
     log "${GLOBAL_DEST}/ -> ~/.claude/ (restore)"
 fi
 
-# 4b. openclaw-mirror/.openclaw/ → ~/.openclaw/
-if [ -d "${OPENCLAW_MIRROR_DEST}/.openclaw" ]; then
-    /usr/bin/rsync -a --delete \
-        --exclude='logs/' \
-        --exclude='canvas/' \
-        --exclude='browser/' \
-        --exclude='cache/' \
-        --exclude='tmp/' \
-        --exclude='.git/' \
-        "${OPENCLAW_MIRROR_DEST}/.openclaw/" "${HOME}/.openclaw/"
-    log "${OPENCLAW_MIRROR_DEST}/.openclaw/ -> ~/.openclaw/ (restore)"
-fi
-
-# 4c. openclaw-mirror/LaunchAgents/ → ~/Library/LaunchAgents/
-#     LaunchAgents keeps --update (no --delete): this dir contains other plists
-#     we must not touch; --include/--exclude already scopes to ai.openclaw.* only.
-if [ -d "${OPENCLAW_MIRROR_DEST}/LaunchAgents" ]; then
-    /usr/bin/rsync -a --update \
-        --include='ai.openclaw.*.plist' \
-        --exclude='*' \
-        "${OPENCLAW_MIRROR_DEST}/LaunchAgents/" "${HOME}/Library/LaunchAgents/"
-    log "${OPENCLAW_MIRROR_DEST}/LaunchAgents/ -> ~/Library/LaunchAgents/ (restore)"
-fi
+# 4b/4c. openclaw restore removed 2026-07-17: openclaw uninstalled.
+#        Restoring from openclaw-mirror/ would resurrect ~/.openclaw and the
+#        ai.openclaw.* LaunchAgents on a machine where they were removed.
 
 # 4d. claude-projects/ → each project's .claude/
 # Clean non-canonical dirs that git pull may have brought back
