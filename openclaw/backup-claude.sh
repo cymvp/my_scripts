@@ -5,7 +5,8 @@ set -euo pipefail
 HOME="${HOME:-$(dscl . -read /Users/"$(whoami)" NFSHomeDirectory | awk '{print $2}')}"
 export HOME
 
-# Sync Claude Code and OpenClaw data across machines via a shared git repo.
+# Sync Claude Code data across machines via a shared git repo.
+# (OpenClaw support removed 2026-07-17/23: uninstalled, mirror data deleted.)
 #
 # Flow: backup → commit → pull (merge) → restore → push
 #
@@ -165,8 +166,7 @@ fi
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
-# 1b/1c. openclaw backup removed 2026-07-17: openclaw uninstalled.
-#        openclaw-mirror/ in the repo is kept as a frozen archive of the last state.
+# 1b/1c. openclaw backup removed 2026-07-17; mirror data deleted from repo 2026-07-23.
 
 # 1d. Each project's .claude/ → claude-projects/<safe-name>/
 # Clean non-canonical dirs from claude-projects/ (safe_name has no leading dash)
