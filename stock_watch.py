@@ -107,6 +107,22 @@ NAME_COLOR = "#2e9bff"   # 股票名：蓝
 BG = "systemTransparent" # 透明背景（macOS Tk）
 
 
+TRADE_LOG = os.path.expanduser("~/projects/logs/trade_assist.log")
+
+
+def _trade_log(line):
+    """把做 T 的每 tick 决策与事件写日志，供 `tail -f` 监控程序是否正常。"""
+    try:
+        os.makedirs(os.path.dirname(TRADE_LOG), exist_ok=True)
+        import datetime as _dt
+        from zoneinfo import ZoneInfo as _Z
+        ts = _dt.datetime.now(_Z("Asia/Shanghai")).strftime('%Y-%m-%d %H:%M:%S')
+        with open(TRADE_LOG, "a") as f:
+            f.write(f"{ts}(BJT) {line}\n")
+    except Exception:
+        pass
+
+
 def _notify_mac(title, text):
     """macOS 弹窗通知 + 提示音（失败静默，不影响主流程）。"""
     import subprocess
@@ -140,10 +156,12 @@ def _notify_slack(text):
 
 def _build_app():
     """构建并返回 tkinter 应用。延迟 import，使纯函数测试无需 Tk。"""
+    import datetime
     import threading
     import time
     import tkinter as tk
     from tkinter import messagebox, simpledialog
+    from zoneinfo import ZoneInfo
 
     import trade_assist as ta
 
@@ -235,152 +253,213 @@ def _build_app():
 
             tk.Button(win, text="确认删除", command=do_delete).pack(pady=(10, 0))
 
-        # ---------------- 做 T 助手 ----------------
+        # ---------------- 做 T 助手（每股独立，方法均带 code 参数）----------------
 
-        def _build_trade_bar(self):
-            if self.trade_bar:
-                self.trade_bar.destroy()
-            self.trade_bar = tk.Frame(self, bg=BG)
-            self.trade_bar.pack(fill="x", padx=6, pady=(0, 4))
-            self.t_status = tk.Label(self.trade_bar, bg=BG, fg=FLAT_COLOR,
-                                     font=("Menlo", 10), anchor="w")
-            self.t_status.pack(side="left")
-            self.t_fill_btn = tk.Label(self.trade_bar, text="成交", bg=BG,
-                                       fg=UP_COLOR, font=("Menlo", 10, "bold"),
-                                       cursor="pointinghand")
-            self.t_skip_btn = tk.Label(self.trade_bar, text="忽略", bg=BG,
-                                       fg="#777", font=("Menlo", 10),
-                                       cursor="pointinghand")
-            self.t_fill_btn.bind("<Button-1>", lambda e: self._sig_fill())
-            self.t_skip_btn.bind("<Button-1>", lambda e: self._sig_skip())
-            self.t_status.config(text="T: 等待行情…")
+        def _build_trade_ui(self, cell, code):
+            """在某股票 cell 下方建该股的信号栏。"""
+            bar = tk.Frame(cell, bg=BG)
+            bar.pack(anchor="w")
+            status = tk.Label(bar, bg=BG, fg=FLAT_COLOR, font=("Menlo", 9),
+                              anchor="w")
+            status.pack(side="left")
+            fill = tk.Label(bar, text="成交", bg=BG, fg=UP_COLOR,
+                            font=("Menlo", 9, "bold"), cursor="pointinghand")
+            skip = tk.Label(bar, text="忽略", bg=BG, fg="#777", font=("Menlo", 9),
+                            cursor="pointinghand")
+            fill.bind("<Button-1>", lambda e, c=code: self._sig_fill(c))
+            skip.bind("<Button-1>", lambda e, c=code: self._sig_skip(c))
+            status.config(text="T:等待行情…")
+            self.t_ui[code] = {"status": status, "fill": fill, "skip": skip}
 
-        def _trade_setup(self):
-            cur = self.book
-            init = (f"{cur.base_shares} {cur.cash:.0f} {cur.t_pool:.0f}"
-                    if cur else "300 200000 330000")
+        def _stock_menu(self, event, code):
+            m = tk.Menu(self, tearoff=0)
+            name = self.quotes.get(code, {}).get("name", code)
+            if code in self.books:
+                m.add_command(label=f"{name} 做T设置",
+                              command=lambda: self._trade_setup(code))
+                m.add_command(label=f"重置 {name} 网格",
+                              command=lambda: self._trade_reset(code))
+                m.add_command(label=f"关闭 {name} 做T",
+                              command=lambda: self._trade_disable(code))
+            else:
+                m.add_command(label=f"启用 {name} 做T",
+                              command=lambda: self._trade_setup(code))
+            m.tk_popup(event.x_root, event.y_root)
+
+        def _trade_setup(self, code):
+            cur = self.books.get(code)
+            name = self.quotes.get(code, {}).get("name", code)
+            init = f"{cur.base_shares} {cur.t_pool:.0f}" if cur else "300 330000"
             raw = simpledialog.askstring(
-                "做 T 设置", "底仓股数 可用资金 T资金池（输 0 0 0 停用）",
+                f"{name} 做 T 设置", "底仓股数 资金池（资金池同时是买入上限；输 0 停用）",
                 initialvalue=init, parent=self)
             if not raw:
                 return
             try:
-                base, cash, pool = (float(x) for x in raw.split())
-            except ValueError:
-                messagebox.showwarning("格式错误", "示例：300 200000 330000")
+                parts = [float(x) for x in raw.split()]
+                base = parts[0]
+                pool = parts[1] if len(parts) > 1 else parts[0]
+            except (ValueError, IndexError):
+                messagebox.showwarning("格式错误", "示例：300 330000")
                 return
             if base <= 0:
-                self.book = None
-                if self.trade_bar:
-                    self.trade_bar.destroy()
-                    self.trade_bar = None
-                if os.path.exists(ta.TRADE_CONFIG_PATH):
-                    os.rename(ta.TRADE_CONFIG_PATH, ta.TRADE_CONFIG_PATH + ".off")
+                self._trade_disable(code)
                 return
             today = time.strftime("%Y-%m-%d")
-            self.book = ta.TradeBook(stock="sz300308", base_shares=int(base),
-                                     cash=cash, t_pool=pool, date=today)
-            ta.save_book(self.book)
-            self.engine = None
-            self._build_trade_bar()
+            self.books[code] = ta.TradeBook(stock=code, base_shares=int(base),
+                                            cash=pool, date=today)  # t_pool 默认=cash
+            ta.save_books(self.books)
+            self.t_engine.pop(code, None)   # 重新按昨收构建
+            self._render_rows()
 
-        def _trade_tick(self, q):
-            """每次刷新喂入目标股行情。q 需含 current/prev_close/vol/amount。"""
-            if not all(k in q for k in ("current", "prev_close", "vol", "amount")):
+        def _trade_reset(self, code):
+            """主动重置：清空当日已触发档与中枢，网格按当前行情重新武装。"""
+            if code not in self.books:
                 return
-            now = time.localtime()
-            hhmm = time.strftime("%H%M", now)
-            today = time.strftime("%Y-%m-%d", now)
-            if self.book.date != today:
-                self.book.rollover(today)
-                ta.save_book(self.book)
-                self.engine = None
-            if self.engine is None:
-                self.engine = ta.GridEngine(q["prev_close"], t_pool=self.book.t_pool)
-                self.risk = ta.RiskGuard(q["prev_close"])
-                if self.engine.qty == 0:
-                    self.t_status.config(text="T: 资金池不足 1 手，已禁用", fg=UP_COLOR)
+            self.books[code].grid_center = None
+            self.books[code].triggered_levels = []
+            ta.save_books(self.books)
+            for d in (self.t_engine, self.t_risk, self.t_prevpx, self.t_sig):
+                d.pop(code, None)
+            self._render_rows()
+
+        def _trade_disable(self, code):
+            self.books.pop(code, None)
+            for d in (self.t_engine, self.t_risk, self.t_prevpx,
+                      self.t_sig, self.t_summary):
+                d.pop(code, None)
+            ta.save_books(self.books)
+            self._render_rows()
+
+        def _trade_tick(self, code, q):
+            """喂入某股行情。q 需含 current/prev_close/vol/amount。"""
+            book = self.books.get(code)
+            ui = self.t_ui.get(code)
+            if not book or not ui or not all(
+                    k in q for k in ("current", "prev_close", "vol", "amount")):
+                return
+            # A 股交易时段必须用北京时间判断；本机是 JST(比北京快1h)，
+            # 直接用 time.strftime 会让 14:45 尾盘停单等逻辑整体早触发 1 小时
+            bjt = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
+            hhmm = bjt.strftime("%H%M")
+            today = bjt.strftime("%Y-%m-%d")
+            if book.date != today:
+                book.rollover(today)
+                ta.save_books(self.books)
+                self.t_engine.pop(code, None)
+            if code not in self.t_engine:
+                self.t_engine[code] = ta.GridEngine(q["prev_close"], t_pool=book.t_pool)
+                self.t_risk[code] = ta.RiskGuard(q["prev_close"])
+                # 重启恢复：当日已存的网格状态直接接续，不重建
+                if book.grid_center or book.triggered_levels:
+                    self.t_engine[code].restore(book.grid_center, book.triggered_levels)
+                if self.t_engine[code].qty == 0:
+                    ui["status"].config(text="T:资金池不足1手", fg=UP_COLOR)
                     return
+            eng, risk = self.t_engine[code], self.t_risk[code]
             px = q["current"]
             vwap = q["amount"] / q["vol"] if q["vol"] else px
-            self.risk.update(ts=time.time(), px=px, vwap=vwap)
-            # 触发检查（有活动信号或非交易时段则不出新信号）
+            eng.roll(px)                 # 价格驱动追踪：中枢随现价跳格移动
+            # 网格状态有变则回存（重启可恢复）
+            trig = sorted(list(t) for t in eng.triggered)
+            if eng.center != book.grid_center or trig != book.triggered_levels:
+                book.grid_center = eng.center
+                book.triggered_levels = trig
+                ta.save_books(self.books)
+            risk.update(ts=time.time(), px=px, vwap=vwap)
+            fused = book.fused(px)       # 日内最大亏损熔断
             trading = "0930" <= hhmm <= "1500"
-            if trading and self._sig is None and self._prev_px is not None:
-                limit_hit = self.book.daily_limit_hit()
-                sigs = self.engine.check(
-                    self._prev_px, px, hhmm,
-                    no_buy=self.risk.no_buy or self.risk.silence_all or limit_hit,
-                    no_sell=self.risk.no_sell or self.risk.silence_all or limit_hit)
+            if trading and not fused and code not in self.t_sig and code in self.t_prevpx:
+                limit_hit = book.daily_limit_hit()
+                sigs = eng.check(
+                    self.t_prevpx[code], px, hhmm,
+                    no_buy=risk.no_buy or risk.silence_all or limit_hit,
+                    no_sell=risk.no_sell or risk.silence_all or limit_hit)
                 if sigs:
-                    self._sig_show(sigs[0])
-            self._prev_px = px
-            self._trade_status(px, hhmm)
+                    self._sig_show(code, sigs[0])
+            self.t_prevpx[code] = px
+            self._trade_status(code, px, hhmm, fused)
 
-        def _trade_status(self, px, hhmm):
-            if self._sig:
+        def _trade_status(self, code, px, hhmm, fused=False):
+            if code in self.t_sig:
                 return  # 信号显示优先
-            pnl = self.book.realized_pnl()
+            book, eng, risk = self.books[code], self.t_engine[code], self.t_risk[code]
+            ui = self.t_ui[code]
+            pnl = book.realized_pnl()
+            if fused:
+                ui["status"].config(
+                    text=f"🔴熔断 T{pnl:+.0f} 建议平T腿控损", fg=UP_COLOR)
+                return
             flags = []
-            if self.risk.no_sell:
-                flags.append("涨势停卖")
-            if self.risk.no_buy:
-                flags.append("跌势停买")
-            if self.book.daily_limit_hit():
-                flags.append("日限额")
-            lv = self.engine.levels
-            n = self.engine.n_arm
-            below = max((l for l in lv["buy"][:n] if l < px), default=None)
-            above = min((l for l in lv["sell"][:n] if l > px), default=None)
-            t = f"T: 盈亏{pnl:+.0f}"
+            if risk.no_sell:
+                flags.append("停卖")
+            if risk.no_buy:
+                flags.append("停买")
+            if book.daily_limit_hit():
+                flags.append("限额")
+            n = eng.n_arm
+            below = max((l for l in eng.levels["buy"][:n] if l < px), default=None)
+            above = min((l for l in eng.levels["sell"][:n] if l > px), default=None)
+            t = f"T{pnl:+.0f}"
             if below:
-                t += f" ↓买档{(below / px - 1) * 100:+.1f}%"
+                t += f" 买{(below / px - 1) * 100:+.1f}%"
             if above:
-                t += f" ↑卖档{(above / px - 1) * 100:+.1f}%"
+                t += f" 卖{(above / px - 1) * 100:+.1f}%"
             if flags:
                 t += " ⚠" + "/".join(flags)
-            # 收盘日报（一次）
+            # 每 tick 决策日志（监控用）：价格/中枢/最近档距/风控/是否挂单
+            _trade_log(
+                f"{code} px={px:.2f} center={eng.center:.2f} "
+                f"买档{below and f'{below:.2f}({(below/px-1)*100:+.2f}%)' or '-'} "
+                f"卖档{above and f'{above:.2f}({(above/px-1)*100:+.2f}%)' or '-'} "
+                f"pnl={pnl:+.0f} flags={'/'.join(flags) or '-'} "
+                f"sig={'挂单中' if code in self.t_sig else '-'}")
             today = time.strftime("%Y-%m-%d")
-            if hhmm >= "1500" and self._summary_sent != today:
-                self._summary_sent = today
-                n_fill = len(self.book.fills)
-                msg = (f":checkered_flag: 做T日报 {today}\n成交 {n_fill} 笔，"
-                       f"已实现盈亏 *{pnl:+.0f}* 元\n"
-                       f"底仓 {self.book.base_shares} 股，可用资金 {self.book.cash:.0f}")
+            if hhmm >= "1500" and self.t_summary.get(code) != today:
+                self.t_summary[code] = today
+                name = self.quotes.get(code, {}).get("name", code)
+                msg = (f":checkered_flag: {name} 做T日报 {today}\n"
+                       f"成交 {len(book.fills)} 笔，已实现盈亏 *{pnl:+.0f}* 元\n"
+                       f"底仓 {book.base_shares} 股，可用 {book.cash:.0f}")
                 threading.Thread(target=_notify_slack, args=(msg,), daemon=True).start()
-                t = f"T: 收盘 盈亏{pnl:+.0f} 已发日报"
-            self.t_status.config(text=t, fg=UP_COLOR if pnl > 0
-                                 else DOWN_COLOR if pnl < 0 else FLAT_COLOR)
+                t = f"收盘 T{pnl:+.0f}"
+            ui["status"].config(text=t, fg=UP_COLOR if pnl > 0
+                                else DOWN_COLOR if pnl < 0 else FLAT_COLOR)
 
-        def _sig_show(self, sig):
-            self._sig = sig
+        def _sig_show(self, code, sig):
+            self.t_sig[code] = sig
+            ui = self.t_ui[code]
             color = DOWN_COLOR if sig.side == "B" else UP_COLOR
             arrow = "▼买" if sig.side == "B" else "▲卖"
-            self.t_status.config(
-                text=f"{arrow}{sig.qty}股 限价{sig.price:.2f}", fg=color)
-            self.t_fill_btn.pack(side="left", padx=(8, 2))
-            self.t_skip_btn.pack(side="left", padx=2)
+            ui["status"].config(text=f"{arrow}{sig.qty}@{sig.price:.2f}", fg=color)
+            ui["fill"].pack(side="left", padx=(6, 2))
+            ui["skip"].pack(side="left", padx=2)
+            name = self.quotes.get(code, {}).get("name", code)
             act = "买入" if sig.side == "B" else "卖出"
-            text = f"{act} {sig.qty} 股 @ {sig.price:.2f}（网格触发）"
+            text = f"{name} {act} {sig.qty}股 @ {sig.price:.2f}"
+            _trade_log(f"{code} ★SIGNAL {sig.side} {sig.qty}@{sig.price:.2f}")
             threading.Thread(target=_notify_mac, args=("做T信号", text),
                              daemon=True).start()
             threading.Thread(target=_notify_slack,
                              args=(f":rotating_light: 做T信号：{text}",),
                              daemon=True).start()
-            self.after(ta.SIGNAL_TTL * 1000, lambda s=sig: self._sig_expire(s))
+            self.after(ta.SIGNAL_TTL * 1000, lambda: self._sig_expire(code, sig))
 
-        def _sig_hide(self):
-            self._sig = None
-            self.t_fill_btn.pack_forget()
-            self.t_skip_btn.pack_forget()
+        def _sig_hide(self, code):
+            self.t_sig.pop(code, None)
+            ui = self.t_ui.get(code)
+            if ui:
+                ui["fill"].pack_forget()
+                ui["skip"].pack_forget()
 
-        def _sig_expire(self, sig):
-            if self._sig is sig:
-                self.engine.expire(sig)
-                self._sig_hide()
+        def _sig_expire(self, code, sig):
+            if self.t_sig.get(code) is sig:
+                self.t_engine[code].expire(sig)
+                self._sig_hide(code)
+                _trade_log(f"{code} 信号超时过期(5分钟未处理)，档位重新武装")
 
-        def _sig_fill(self):
-            sig = self._sig
+        def _sig_fill(self, code):
+            sig = self.t_sig.get(code)
             if not sig:
                 return
             raw = simpledialog.askstring(
@@ -394,22 +473,23 @@ def _build_app():
             except ValueError:
                 messagebox.showwarning("格式错误", "示例：100 991.50")
                 return
-            err = self.book.apply_fill(sig.side, qty, px,
-                                       ts=time.strftime("%H:%M:%S"))
+            err = self.books[code].apply_fill(sig.side, qty, px,
+                                              ts=time.strftime("%H:%M:%S"))
             if err:
                 messagebox.showwarning("记账被拒", err)
+                _trade_log(f"{code} 成交回报被拒: {err}")
                 return
-            ta.save_book(self.book)
-            target = ta.pair_target(sig.side, px, self.engine.step)
+            ta.save_books(self.books)
+            _trade_log(f"{code} ✅成交 {sig.side} {qty}@{px:.2f} pnl={self.books[code].realized_pnl():+.0f}")
+            target = ta.pair_target(sig.side, px, self.t_engine[code].step)
             nxt = "目标卖出" if sig.side == "B" else "目标买回"
             threading.Thread(target=_notify_slack, args=(
-                f"✅ 成交回报：{'买' if sig.side == 'B' else '卖'}{qty}股@{px:.2f}，"
+                f"✅ 成交：{'买' if sig.side == 'B' else '卖'}{qty}股@{px:.2f}，"
                 f"{nxt} {target:.2f}",), daemon=True).start()
-            self._sig_hide()
+            self._sig_hide(code)
 
-        def _sig_skip(self):
-            if self._sig:
-                self._sig_hide()  # 档位保持已触发：该档今日不再提示
+        def _sig_skip(self, code):
+            self._sig_hide(code)  # 档位保持已触发：该档今日不再提示
 
         def _win_press(self, event):
             self._win_off = (event.x_root - self.winfo_x(),
@@ -433,7 +513,9 @@ def _build_app():
             for code, (name_lbl, _) in self.rows.items():
                 if code == self._drag_code:
                     continue
-                cell = name_lbl.master
+                cell = name_lbl                      # 上溯到 body 的直接子级
+                while cell.master is not None and cell.master is not self.body:
+                    cell = cell.master
                 if cell.winfo_x() + cell.winfo_width() / 2 < px:
                     target += 1
             codes = [c for c in self.codes if c != self._drag_code]
@@ -453,7 +535,7 @@ def _build_app():
             self.status = tk.Label(self.body, bg=BG, font=("Menlo", 11),
                                    cursor="fleur", text=self._status_text,
                                    fg=self._status_color)
-            self.status.pack(side="left", padx=(0, 10))
+            self.status.pack(side="left", padx=(0, 10), anchor="n")
             self.status.bind("<ButtonPress-1>", self._win_press)
             self.status.bind("<B1-Motion>", self._win_move)
             for btn in ("<Button-2>", "<Button-3>"):
@@ -482,11 +564,11 @@ def _build_app():
             # 末尾：+ 添加 / − 删除（无边框 Label，避免 macOS 按钮方框）
             plus = tk.Label(self.body, text="+", bg=BG, fg=NAME_COLOR,
                             font=("Menlo", 15), cursor="pointinghand")
-            plus.pack(side="left", padx=(10, 2))
+            plus.pack(side="left", padx=(10, 2), anchor="n")
             plus.bind("<Button-1>", lambda e: self._prompt_add())
             minus = tk.Label(self.body, text="−", bg=BG, fg=NAME_COLOR,
                              font=("Menlo", 15), cursor="pointinghand")
-            minus.pack(side="left", padx=(2, 4))
+            minus.pack(side="left", padx=(2, 4), anchor="n")
             minus.bind("<Button-1>", lambda e: self._prompt_delete())
             self._update_labels()
 
@@ -508,18 +590,17 @@ def _build_app():
 
         def refresh(self):
             try:
-                codes = list(self.codes)
-                if self.book and self.book.stock not in codes:
-                    codes.append(self.book.stock)   # 做 T 标的不在自选也要拉行情
-                quotes = fetch_quotes(codes)
+                quotes = fetch_quotes(self.codes)
                 self.quotes = {q["code"]: q for q in quotes}
                 self._set_status(f"● {time.strftime('%H:%M')}", DOWN_COLOR)
-                if self.book and self.book.stock in self.quotes:
-                    try:
-                        self._trade_tick(self.quotes[self.book.stock])
-                    except Exception:
-                        self.t_status.config(text="T: 内部错误(见终端)", fg=UP_COLOR)
-                        import traceback; traceback.print_exc()
+                for code in list(self.books):
+                    if code in self.quotes:
+                        try:
+                            self._trade_tick(code, self.quotes[code])
+                        except Exception:
+                            import traceback
+                            _trade_log(f"{code} ⚠异常: {traceback.format_exc().splitlines()[-1]}")
+                            traceback.print_exc()
             except Exception:
                 # 网络/接口失败：保留上次价格，仅标记未更新
                 self._set_status(f"⚠ {time.strftime('%H:%M')}", UP_COLOR)

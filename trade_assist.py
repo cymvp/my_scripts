@@ -15,6 +15,8 @@ PAIR_STEPS = 2         # 配对目标 = 2 个档距
 SIGNAL_TTL = 300       # 信号 5 分钟未回报则过期、档位重新武装
 CUTOFF_HHMM = "1445"   # 之后不开新 T
 DAILY_LIMIT_RATIO = 0.30
+FUSE_RATIO = 0.02      # 日内最大亏损熔断线 = 资金池 × 2%（回测校准）
+RECENTER_STEPS = 2     # 价格驱动中枢：价格偏离中枢达 N 档就把中枢移到现价（回测选 2 档）
 TRADE_CONFIG_PATH = os.path.expanduser("~/.stock_watch_trade.json")
 
 
@@ -64,12 +66,34 @@ class GridEngine:
     """网格触发引擎。喂入相邻两次快照价，产出触档信号。"""
 
     def __init__(self, prev_close, step=DEFAULT_STEP, n_levels=N_LEVELS,
-                 t_pool=0.0):
+                 t_pool=0.0, recenter_steps=RECENTER_STEPS):
         self.prev_close = prev_close
         self.step = step
+        self.n_levels = n_levels
+        self.recenter_steps = recenter_steps
+        self.center = prev_close          # 网格中枢（价格驱动：偏离达阈值就移到现价）
         self.levels = grid_levels(prev_close, step, n_levels)
         self.n_arm, self.qty = plan_levels(t_pool, prev_close, n_levels)
         self.triggered = set()   # 已触发（今日不再触发，除非 expire）
+
+    def recenter(self, new_center):
+        """把中枢移到 new_center：重算档位并清空已触发（新价格区间是新战场）。"""
+        self.center = new_center
+        self.levels = grid_levels(new_center, self.step, self.n_levels)
+        self.triggered = set()
+
+    def roll(self, price):
+        """价格驱动追踪：现价偏离中枢达 recenter_steps 档，就把中枢移到现价。
+        阈值内不动，给价格在网格里震荡的空间（防止贴着价格抖动、无法触发）。"""
+        if abs(price - self.center) >= self.recenter_steps * self.step * self.center:
+            self.recenter(price)
+
+    def restore(self, center, triggered):
+        """重启后恢复当日盘中状态（中枢 + 已触发档），不重建。"""
+        if center:
+            self.center = center
+            self.levels = grid_levels(center, self.step, self.n_levels)
+        self.triggered = {tuple(t) for t in (triggered or [])}
 
     def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False):
         """价格从 prev_px 走到 px：返回触发的信号列表（通常 0 或 1 个）。"""
@@ -140,7 +164,8 @@ class TradeBook:
     """持仓与成交记账。T+1：当日买入不可卖。"""
 
     def __init__(self, stock, base_shares, cash, date, t_pool=None,
-                 fills=None, history=None):
+                 fills=None, history=None, grid_center=None,
+                 triggered_levels=None):
         self.stock = stock
         self.base_shares = base_shares   # 今日开盘前的持仓（可卖）
         self.cash = cash
@@ -149,6 +174,9 @@ class TradeBook:
         self.date = date
         self.fills = fills or []         # 当日成交 [{ts,side,qty,price}]
         self.history = history or []     # 往日归档
+        # 盘中网格状态（持久化以便重启恢复，不重建）
+        self.grid_center = grid_center
+        self.triggered_levels = triggered_levels or []
 
     # -- 当日聚合 --
     def _sold_today(self):
@@ -199,6 +227,30 @@ class TradeBook:
                 si += 1
         return pnl
 
+    def floating_pnl(self, price):
+        """未配对腿的浮动盈亏（FIFO 配对后剩余敞口，不计费用）。"""
+        buys = [[f["qty"], f["price"]] for f in self.fills if f["side"] == "B"]
+        sells = [[f["qty"], f["price"]] for f in self.fills if f["side"] == "S"]
+        bi = si = 0
+        while bi < len(buys) and si < len(sells):
+            q = min(buys[bi][0], sells[si][0])
+            buys[bi][0] -= q
+            sells[si][0] -= q
+            if buys[bi][0] == 0:
+                bi += 1
+            if sells[si][0] == 0:
+                si += 1
+        floating = 0.0
+        for q, p in buys[bi:]:
+            floating += (price - p) * q          # 未平买腿
+        for q, p in sells[si:]:
+            floating += (p - price) * q          # 未平卖腿
+        return floating
+
+    def fused(self, price, ratio=FUSE_RATIO):
+        """当日总亏损（已实现+浮动）是否触发熔断线（资金池×ratio）。"""
+        return self.realized_pnl() + self.floating_pnl(price) <= -ratio * self.t_pool
+
     def rollover(self, new_date):
         """跨日：当日买卖并入底仓，归档当日成交。"""
         self.base_shares += self._bought_today() - self._sold_today()
@@ -207,6 +259,8 @@ class TradeBook:
                                  "pnl": round(self.realized_pnl(), 2)})
         self.fills = []
         self.date = new_date
+        self.grid_center = None          # 新交易日：网格状态清零
+        self.triggered_levels = []
 
 
 def save_book(book, path=None):
@@ -228,7 +282,7 @@ def load_book(path=None):
 
 
 _BOOK_FIELDS = ("stock", "base_shares", "cash", "t_pool", "date",
-                "fills", "history")
+                "fills", "history", "grid_center", "triggered_levels")
 
 
 def save_books(books, path=None):

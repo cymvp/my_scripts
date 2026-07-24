@@ -86,6 +86,94 @@ def test_risk_no_buy_blocks_buy_side():
     assert len(sigs) == 1 and sigs[0].side == "S"
 
 
+# --- 追踪网格（roll / recenter）------------------------------------------
+
+def test_recenter_moves_levels_and_clears_triggered():
+    e = make_engine(prev_close=1000.0, step=0.009)
+    e.check(prev_px=992.0, px=990.5, hhmm="1000")   # 触发买1档
+    assert ("B", 0) in e.triggered
+    e.recenter(1010.0)                               # 中枢上移
+    assert abs(e.levels["buy"][0] - 1010.0 * 0.991) < 1e-6
+    assert e.triggered == set()                      # 跳格清空触发
+
+
+def test_roll_price_driven_threshold():
+    # 价格驱动，默认 2 档阈值：step 0.9% → 阈值 1.8%（=18 元 @1000）
+    e = ta.GridEngine(prev_close=1000.0, step=0.009, n_levels=5, t_pool=550_000,
+                      recenter_steps=2)
+    assert e.center == 1000.0
+    e.roll(1010.0)                                   # 漂移 1.0% < 1.8%，不动
+    assert e.center == 1000.0
+    e.roll(1020.0)                                   # 漂移 2.0% >= 1.8%，中枢移到现价
+    assert e.center == 1020.0
+
+
+def test_roll_recenters_to_price_and_enables_buy():
+    # 价格拉到 1020 触发重定心 → 中枢=1020，买1档≈1010.8，回调即可买
+    e = ta.GridEngine(prev_close=1000.0, step=0.009, n_levels=5, t_pool=550_000,
+                      recenter_steps=2)
+    e.roll(1020.0)
+    assert e.center == 1020.0
+    sigs = e.check(prev_px=1012.0, px=1010.0, hhmm="1030")
+    assert sigs and sigs[0].side == "B"
+
+
+# --- 盘中状态持久化（重启恢复，不重建）----------------------------------
+
+def test_engine_restore_center_and_triggered():
+    e = make_engine(prev_close=1000.0, step=0.009)
+    e.restore(center=1010.0, triggered=[["B", 0], ["S", 1]])
+    assert e.center == 1010.0
+    assert abs(e.levels["buy"][0] - 1010.0 * 0.991) < 1e-6
+    assert ("B", 0) in e.triggered and ("S", 1) in e.triggered
+    # 恢复后该档不再重复触发
+    assert e.check(prev_px=1002.0, px=1000.0, hhmm="1030") == []
+
+
+def test_book_persists_grid_state(tmp_path):
+    p = str(tmp_path / "t.json")
+    b = make_book()
+    b.grid_center = 1060.2
+    b.triggered_levels = [["B", 0], ["B", 1]]
+    ta.save_books({"sz300308": b}, path=p)
+    b2 = ta.load_books(path=p)["sz300308"]
+    assert b2.grid_center == 1060.2
+    assert b2.triggered_levels == [["B", 0], ["B", 1]]
+
+
+def test_rollover_clears_grid_state():
+    b = make_book()
+    b.grid_center = 1060.2
+    b.triggered_levels = [["B", 0]]
+    b.rollover("2026-07-25")
+    assert b.grid_center is None and b.triggered_levels == []
+
+
+# --- 浮动盈亏 / 熔断 ------------------------------------------------------
+
+def test_floating_pnl_open_buy_leg():
+    b = make_book()
+    b.apply_fill("B", 100, 1000.0, ts="10:00")       # 未配对买腿
+    # 现价 990：浮亏 (990-1000)*100 = -1000（不计费，浮动口径）
+    assert abs(b.floating_pnl(990.0) - (-1000.0)) < 1e-6
+
+
+def test_floating_pnl_paired_is_zero():
+    b = make_book()
+    b.apply_fill("B", 100, 1000.0, ts="10:00")
+    b.apply_fill("S", 100, 1018.0, ts="11:00")       # 已配对，无敞口
+    assert abs(b.floating_pnl(990.0)) < 1e-6
+
+
+def test_fuse_triggers_on_total_loss():
+    b = make_book(t_pool=110_000)                    # 熔断线 = 2% = -2200
+    b.apply_fill("B", 100, 1000.0, ts="10:00")
+    # 现价 970：浮亏 -3000 < -2200 -> 熔断
+    assert b.fused(970.0, ratio=0.02) is True
+    # 现价 995：浮亏 -500 -> 不熔断
+    assert b.fused(995.0, ratio=0.02) is False
+
+
 # --- RiskGuard -----------------------------------------------------------
 
 def test_trend_up_pauses_sell():
