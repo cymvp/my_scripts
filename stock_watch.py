@@ -178,16 +178,14 @@ def _build_app():
             self._menu.add_command(label="做 T 设置", command=self._trade_setup)
             self._menu.add_command(label="退出", command=self.destroy)
 
-            # --- 做 T 助手状态 ---
-            self.book = ta.load_book()
-            self.engine = None            # 首次拿到行情后按昨收构建
-            self.risk = None
-            self._prev_px = None
-            self._sig = None              # 当前活动信号
-            self._summary_sent = None     # 已发日报的日期
-            self.trade_bar = None
-            if self.book:
-                self._build_trade_bar()
+            # --- 做 T 助手状态（每股独立，均按股票代码 code 索引）---
+            self.books = ta.load_books()  # {code: TradeBook}
+            self.t_engine = {}            # code -> GridEngine（首次拿到行情后构建）
+            self.t_risk = {}              # code -> RiskGuard
+            self.t_prevpx = {}            # code -> 上一次价格
+            self.t_sig = {}               # code -> 当前活动信号
+            self.t_summary = {}           # code -> 已发日报日期
+            self.t_ui = {}                # code -> {status,fill,skip} 该股信号栏控件
 
             self._render_rows()
             self.refresh()
@@ -460,19 +458,27 @@ def _build_app():
             self.status.bind("<B1-Motion>", self._win_move)
             for btn in ("<Button-2>", "<Button-3>"):
                 self.status.bind(btn, lambda e: self._menu.tk_popup(e.x_root, e.y_root))
+            self.t_ui = {}
             for code in self.codes:
                 cell = tk.Frame(self.body, bg=BG)
-                cell.pack(side="left", padx=3, pady=1)
-                name = tk.Label(cell, bg=BG, fg=NAME_COLOR, font=("Menlo", 12),
+                cell.pack(side="left", padx=3, pady=1, anchor="n")
+                top = tk.Frame(cell, bg=BG)
+                top.pack(anchor="w")
+                name = tk.Label(top, bg=BG, fg=NAME_COLOR, font=("Menlo", 12),
                                 cursor="pointinghand")
                 name.pack(side="left")
-                # 拖动名称调整顺序
+                # 拖动名称调整顺序；右键该股 -> 做 T 菜单
                 name.bind("<ButtonPress-1>", lambda e, c=code: self._drag_start(c))
                 name.bind("<ButtonRelease-1>", lambda e, c=code: self._drag_drop())
-                pct = tk.Label(cell, bg=BG, fg=FLAT_COLOR,
+                for btn in ("<Button-2>", "<Button-3>"):
+                    name.bind(btn, lambda e, c=code: self._stock_menu(e, c))
+                pct = tk.Label(top, bg=BG, fg=FLAT_COLOR,
                                font=("Menlo", 12, "bold"))
                 pct.pack(side="left", padx=(3, 0))
                 self.rows[code] = (name, pct)
+                # 该股启用了做 T：在其下方建信号栏
+                if code in self.books:
+                    self._build_trade_ui(cell, code)
             # 末尾：+ 添加 / − 删除（无边框 Label，避免 macOS 按钮方框）
             plus = tk.Label(self.body, text="+", bg=BG, fg=NAME_COLOR,
                             font=("Menlo", 15), cursor="pointinghand")

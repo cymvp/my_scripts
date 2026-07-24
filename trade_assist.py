@@ -139,12 +139,13 @@ def _fee(side, qty, price):
 class TradeBook:
     """持仓与成交记账。T+1：当日买入不可卖。"""
 
-    def __init__(self, stock, base_shares, cash, t_pool, date,
+    def __init__(self, stock, base_shares, cash, date, t_pool=None,
                  fills=None, history=None):
         self.stock = stock
         self.base_shares = base_shares   # 今日开盘前的持仓（可卖）
         self.cash = cash
-        self.t_pool = t_pool
+        # t_pool 默认等于 cash（合并语义：一笔钱既是买入上限也是网格布档规模）
+        self.t_pool = cash if t_pool is None else t_pool
         self.date = date
         self.fills = fills or []         # 当日成交 [{ts,side,qty,price}]
         self.history = history or []     # 往日归档
@@ -224,3 +225,31 @@ def load_book(path=None):
         return None
     with open(path, encoding="utf-8") as f:
         return TradeBook(**json.load(f))
+
+
+_BOOK_FIELDS = ("stock", "base_shares", "cash", "t_pool", "date",
+                "fills", "history")
+
+
+def save_books(books, path=None):
+    """多股：{code: TradeBook} 存为 {"books": {code: {...}}}。"""
+    path = path or TRADE_CONFIG_PATH
+    data = {"books": {code: {k: getattr(b, k) for k in _BOOK_FIELDS}
+                      for code, b in books.items()}}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.chmod(path, 0o600)
+
+
+def load_books(path=None):
+    """返回 {code: TradeBook}。兼容旧的单 book 平铺格式（自动迁移）。"""
+    path = path or TRADE_CONFIG_PATH
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if "books" in data:
+        return {code: TradeBook(**bd) for code, bd in data["books"].items()}
+    if "stock" in data:                       # 旧格式：单 book 平铺
+        return {data["stock"]: TradeBook(**data)}
+    return {}

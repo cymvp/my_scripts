@@ -171,6 +171,45 @@ def test_rollover_resets_day_keeps_capital():
     assert b.base_shares == 1100 and b.sellable() == 1100
 
 
+def test_t_pool_defaults_to_cash():
+    # 合并语义：不传 t_pool 时默认等于 cash
+    b = ta.TradeBook(stock="sz300308", base_shares=300, cash=330_000,
+                     date="2026-07-24")
+    assert b.t_pool == 330_000
+
+
+def test_books_roundtrip(tmp_path):
+    p = str(tmp_path / "trade.json")
+    b1 = ta.TradeBook(stock="sz300308", base_shares=300, cash=330_000,
+                      date="2026-07-24")
+    b2 = ta.TradeBook(stock="sh688256", base_shares=200, cash=250_000,
+                      date="2026-07-24")
+    b1.apply_fill("B", 100, 991.0, ts="10:00")
+    ta.save_books({"sz300308": b1, "sh688256": b2}, path=p)
+    loaded = ta.load_books(path=p)
+    assert set(loaded) == {"sz300308", "sh688256"}
+    assert loaded["sz300308"].cash == b1.cash
+    assert len(loaded["sz300308"].fills) == 1
+    assert loaded["sh688256"].base_shares == 200
+    import os, stat
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+
+
+def test_load_books_missing_returns_empty(tmp_path):
+    assert ta.load_books(path=str(tmp_path / "nope.json")) == {}
+
+
+def test_load_books_migrates_old_single_format(tmp_path):
+    # 旧格式（单 book 平铺）应被迁移为 {code: book}
+    import json
+    p = tmp_path / "trade.json"
+    p.write_text(json.dumps({"stock": "sz300308", "base_shares": 300,
+                             "cash": 330000, "t_pool": 330000,
+                             "date": "2026-07-24", "fills": [], "history": []}))
+    loaded = ta.load_books(path=str(p))
+    assert set(loaded) == {"sz300308"} and loaded["sz300308"].base_shares == 300
+
+
 def test_config_roundtrip(tmp_path):
     p = str(tmp_path / "trade.json")
     b = make_book()
