@@ -8,19 +8,19 @@
   "tasks": [
     {
       "name": "morning_forecast",
-      "cron": "12 9 * * 1-5",
+      "cron": "42 9 * * 1-5",
       "prompt": "/ycui_morning_forecast",
-      "job_id": "e5562938",
+      "job_id": "e30ca8a2",
       "created": "2026-07-23",
-      "desc": "交易日 9:12 跑 A 股开盘方向预测并发 Slack（脚本设计窗口 9:10-9:25）"
+      "desc": "交易日 9:12 BJT(=10:12 JST) 跑 A 股开盘方向预测并发 Slack（脚本设计窗口 9:10-9:25 BJT）"
     },
     {
       "name": "close_advisor",
-      "cron": "45 14 * * 1-5",
+      "cron": "15 15 * * 1-5",
       "prompt": "/close-advisor 运行完成后，把完整报告（市场快照 + 全球热点摘要 + 今晚事件清单 + 逐票建议 + 一句话总结，控制在 2900 字符内）发送到 Slack：webhook 读取顺序为环境变量 SLACK_WEBHOOK_URL → 本地文件 ~/.slack_webhook_url（webhook 是密钥，绝不写入 my_scripts 公开仓库的任何文件）。用 mrkdwn section block POST。webhook 缺失或发送失败时在对话中明确说明，不要静默。微信通道已失效不要尝试。",
-      "job_id": "42028252",
+      "job_id": "0d85c552",
       "created": "2026-07-23",
-      "desc": "交易日 14:45 收盘前卖出顾问并发 Slack"
+      "desc": "交易日 14:45 BJT(=15:45 JST) 收盘前卖出顾问并发 Slack"
     },
     {
       "name": "ycui_sync",
@@ -46,5 +46,6 @@
       "created": "2026-07-23",
       "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务"
     }
-  ]
+  ],
+  "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。"
 }
