@@ -1,0 +1,226 @@
+"""做 T 助手核心逻辑（纯逻辑，不含 GUI，可独立单测）。
+
+设计见 docs/stock_watch/spec/2026-07-24-trade-assist-spec.md。
+关键前提：A 股 T+1，做 T 依赖底仓；用户手动下单，本模块只产生信号与记账。
+"""
+import json
+import os
+import time
+
+COMMISSION = 0.00025   # 佣金，双边各收
+STAMP = 0.0005         # 印花税，卖出
+DEFAULT_STEP = 0.006   # 回测选定：0.6% + 趋势停手（21天日均+1.26%/手）
+N_LEVELS = 5
+PAIR_STEPS = 2         # 配对目标 = 2 个档距
+SIGNAL_TTL = 300       # 信号 5 分钟未回报则过期、档位重新武装
+CUTOFF_HHMM = "1445"   # 之后不开新 T
+DAILY_LIMIT_RATIO = 0.30
+TRADE_CONFIG_PATH = os.path.expanduser("~/.stock_watch_trade.json")
+
+
+def grid_levels(prev_close, step=DEFAULT_STEP, n=N_LEVELS):
+    """昨收中轴的对称网格：买档在下、卖档在上，各 n 档。"""
+    return {
+        "buy": [prev_close * (1 - step * k) for k in range(1, n + 1)],
+        "sell": [prev_close * (1 + step * k) for k in range(1, n + 1)],
+    }
+
+
+def plan_levels(t_pool, price, n=N_LEVELS):
+    """资金池能布几档、每档多少股（整百）。千元股 1 手≈10 万，资金不足即禁用。"""
+    lots_total = int(t_pool / (price * 100))
+    if lots_total <= 0:
+        return 0, 0
+    n_arm = min(n, lots_total)
+    qty = lots_total // n_arm * 100
+    return n_arm, qty
+
+
+def pair_target(side, price, step=DEFAULT_STEP):
+    """T 腿的配对目标价：买腿向上 2 档，卖腿向下 2 档。"""
+    if side == "B":
+        return price * (1 + PAIR_STEPS * step)
+    return price * (1 - PAIR_STEPS * step)
+
+
+class Signal:
+    def __init__(self, side, level_idx, price, qty, ts=None):
+        self.side = side          # "B" / "S"
+        self.level_idx = level_idx
+        self.price = price        # 建议限价 = 档位价
+        self.qty = qty
+        self.ts = ts if ts is not None else time.time()
+
+    @property
+    def key(self):
+        return (self.side, self.level_idx)
+
+    def __repr__(self):
+        act = "买" if self.side == "B" else "卖"
+        return f"{act}{self.qty}股@{self.price:.2f}"
+
+
+class GridEngine:
+    """网格触发引擎。喂入相邻两次快照价，产出触档信号。"""
+
+    def __init__(self, prev_close, step=DEFAULT_STEP, n_levels=N_LEVELS,
+                 t_pool=0.0):
+        self.prev_close = prev_close
+        self.step = step
+        self.levels = grid_levels(prev_close, step, n_levels)
+        self.n_arm, self.qty = plan_levels(t_pool, prev_close, n_levels)
+        self.triggered = set()   # 已触发（今日不再触发，除非 expire）
+
+    def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False):
+        """价格从 prev_px 走到 px：返回触发的信号列表（通常 0 或 1 个）。"""
+        if hhmm > CUTOFF_HHMM or self.qty == 0:
+            return []
+        out = []
+        for i, lv in enumerate(self.levels["buy"][: self.n_arm]):
+            key = ("B", i)
+            if key in self.triggered or no_buy:
+                continue
+            if prev_px > lv >= px:       # 下穿
+                self.triggered.add(key)
+                out.append(Signal("B", i, lv, self.qty))
+        for i, lv in enumerate(self.levels["sell"][: self.n_arm]):
+            key = ("S", i)
+            if key in self.triggered or no_sell:
+                continue
+            if prev_px < lv <= px:       # 上穿
+                self.triggered.add(key)
+                out.append(Signal("S", i, lv, self.qty))
+        return out
+
+    def expire(self, signal):
+        """信号超时未成交：档位重新武装。"""
+        self.triggered.discard(signal.key)
+
+
+class RiskGuard:
+    """趋势停手 + 涨跌停带静默。采样间隔 >=3 分钟，最近 3 点单调判趋势。"""
+
+    SAMPLE_GAP = 180          # 秒
+    DEVIATION = 0.015         # 价格偏离 VWAP 阈值
+    LIMIT_BAND = 0.01         # 距涨跌停 1% 内全静默
+
+    def __init__(self, prev_close, limit_ratio=0.20):
+        self.prev_close = prev_close
+        self.limit_up = prev_close * (1 + limit_ratio)
+        self.limit_down = prev_close * (1 - limit_ratio)
+        self.samples = []     # [(ts, vwap)]
+        self.no_buy = False
+        self.no_sell = False
+        self.silence_all = False
+
+    def update(self, ts, px, vwap):
+        if not self.samples or ts - self.samples[-1][0] >= self.SAMPLE_GAP:
+            self.samples.append((ts, vwap))
+            self.samples = self.samples[-3:]
+        self.silence_all = (px >= self.limit_up * (1 - self.LIMIT_BAND) or
+                            px <= self.limit_down * (1 + self.LIMIT_BAND))
+        self.no_buy = self.no_sell = False
+        if len(self.samples) == 3 and vwap > 0:
+            v1, v2, v3 = (s[1] for s in self.samples)
+            rising, falling = v1 < v2 < v3, v1 > v2 > v3
+            if px > vwap * (1 + self.DEVIATION) and rising:
+                self.no_sell = True      # 上行趋势：不高卖踏空
+            if px < vwap * (1 - self.DEVIATION) and falling:
+                self.no_buy = True       # 下行趋势：不接飞刀
+
+
+def _fee(side, qty, price):
+    fee = qty * price * COMMISSION
+    if side == "S":
+        fee += qty * price * STAMP
+    return fee
+
+
+class TradeBook:
+    """持仓与成交记账。T+1：当日买入不可卖。"""
+
+    def __init__(self, stock, base_shares, cash, t_pool, date,
+                 fills=None, history=None):
+        self.stock = stock
+        self.base_shares = base_shares   # 今日开盘前的持仓（可卖）
+        self.cash = cash
+        self.t_pool = t_pool
+        self.date = date
+        self.fills = fills or []         # 当日成交 [{ts,side,qty,price}]
+        self.history = history or []     # 往日归档
+
+    # -- 当日聚合 --
+    def _sold_today(self):
+        return sum(f["qty"] for f in self.fills if f["side"] == "S")
+
+    def _bought_today(self):
+        return sum(f["qty"] for f in self.fills if f["side"] == "B")
+
+    def sellable(self):
+        """可卖 = 底仓 − 今日已卖（今日买入 T+1 不可卖）。"""
+        return self.base_shares - self._sold_today()
+
+    def daily_turnover(self):
+        return self._sold_today() + self._bought_today()
+
+    def daily_limit_hit(self):
+        return self.daily_turnover() >= self.base_shares * DAILY_LIMIT_RATIO
+
+    def apply_fill(self, side, qty, price, ts):
+        """回报成交。违反约束返回错误字符串（不记账），成功返回 None。"""
+        if side == "S" and qty > self.sellable():
+            return f"拒绝：卖出 {qty} 超过当前可卖 {self.sellable()} 股(T+1)"
+        if side == "B" and qty * price + _fee("B", qty, price) > self.cash:
+            return f"拒绝：买入需 {qty * price:.0f} 元，超过可用资金 {self.cash:.0f}"
+        fee = _fee(side, qty, price)
+        if side == "B":
+            self.cash -= qty * price + fee
+        else:
+            self.cash += qty * price - fee
+        self.fills.append({"ts": ts, "side": side, "qty": qty, "price": price})
+        return None
+
+    def realized_pnl(self):
+        """当日已实现盈亏：已配对部分（先进先出配对买卖），含费用。"""
+        buys = [[f["qty"], f["price"]] for f in self.fills if f["side"] == "B"]
+        sells = [[f["qty"], f["price"]] for f in self.fills if f["side"] == "S"]
+        pnl, bi, si = 0.0, 0, 0
+        while bi < len(buys) and si < len(sells):
+            q = min(buys[bi][0], sells[si][0])
+            bp, sp = buys[bi][1], sells[si][1]
+            pnl += (sp - bp) * q
+            pnl -= (bp + sp) * q * COMMISSION + sp * q * STAMP
+            buys[bi][0] -= q
+            sells[si][0] -= q
+            if buys[bi][0] == 0:
+                bi += 1
+            if sells[si][0] == 0:
+                si += 1
+        return pnl
+
+    def rollover(self, new_date):
+        """跨日：当日买卖并入底仓，归档当日成交。"""
+        self.base_shares += self._bought_today() - self._sold_today()
+        if self.fills:
+            self.history.append({"date": self.date, "fills": self.fills,
+                                 "pnl": round(self.realized_pnl(), 2)})
+        self.fills = []
+        self.date = new_date
+
+
+def save_book(book, path=None):
+    path = path or TRADE_CONFIG_PATH
+    data = {k: getattr(book, k) for k in
+            ("stock", "base_shares", "cash", "t_pool", "date",
+             "fills", "history")}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.chmod(path, 0o600)
+
+
+def load_book(path=None):
+    path = path or TRADE_CONFIG_PATH
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return TradeBook(**json.load(f))
