@@ -163,6 +163,8 @@ fi
     --exclude='.git/' \
     --exclude='*.sock' \
     --exclude='remote/' \
+    --exclude='telemetry/' \
+    --exclude='.DS_Store' \
     "${HOME}/.claude/" "${GLOBAL_DEST}/"
 log "~/.claude/ -> ${GLOBAL_DEST}/"
 
@@ -295,6 +297,8 @@ if [ -d "${GLOBAL_DEST}" ]; then
         --exclude='.git/' \
         --exclude='*.sock' \
         --exclude='remote/' \
+        --exclude='telemetry/' \
+        --exclude='.DS_Store' \
         "${GLOBAL_DEST}/" "${HOME}/.claude/"
     log "${GLOBAL_DEST}/ -> ~/.claude/ (restore)"
 fi
