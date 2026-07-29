@@ -201,6 +201,7 @@ def _build_app():
             self.t_engine = {}            # code -> GridEngine（首次拿到行情后构建）
             self.t_risk = {}              # code -> RiskGuard
             self.t_prevpx = {}            # code -> 上一次价格
+            self.t_session = {}           # code -> 上次所处交易场次（识别下午开盘首个 tick）
             self.t_sig = {}               # code -> 当前活动信号
             self.t_summary = {}           # code -> 已发日报日期
             self.t_ui = {}                # code -> {status,fill,skip} 该股信号栏控件
@@ -359,6 +360,17 @@ def _build_app():
             eng, risk = self.t_engine[code], self.t_risk[code]
             px = q["current"]
             vwap = q["amount"] / q["vol"] if q["vol"] else px
+            # 午间休市（11:30-13:00）行情冻结，喂入陈旧价会用一个半小时前的价格触发
+            # 假信号，且下午开盘瞬间立刻反向（2026-07-29 实测买 912.74 / 卖 911.19）。
+            # 休市期间只刷新状态显示，不动引擎、不更新 prevpx。
+            sess = ta.session_of(hhmm)
+            if sess == "break":
+                self._trade_status(code, px, hhmm, book.fused(px))
+                return
+            # 下午开盘首个 tick：跨休市的价格跳变不是可交易的连续走势，
+            # 只重锚中枢并重置 prevpx，本 tick 不触发信号。
+            reopen = sess == "pm" and self.t_session.get(code) == "am"
+            self.t_session[code] = sess
             eng.roll(px)                 # 价格驱动追踪：中枢随现价跳格移动
             # 网格状态有变则回存（重启可恢复）
             trig = sorted(list(t) for t in eng.triggered)
@@ -368,11 +380,11 @@ def _build_app():
                 ta.save_books(self.books)
             risk.update(ts=time.time(), px=px, vwap=vwap)
             fused = book.fused(px)       # 日内最大亏损熔断
-            trading = "0930" <= hhmm <= "1500"
-            if trading and not fused and code not in self.t_sig and code in self.t_prevpx:
+            if (not reopen and not fused and code not in self.t_sig
+                    and code in self.t_prevpx):
                 limit_hit = book.daily_limit_hit()
                 sigs = eng.check(
-                    self.t_prevpx[code], px, hhmm,
+                    self.t_prevpx[code], px, hhmm, ts=time.time(),
                     no_buy=risk.no_buy or risk.silence_all or limit_hit,
                     no_sell=risk.no_sell or risk.silence_all or limit_hit)
                 if sigs:
@@ -381,15 +393,9 @@ def _build_app():
             self._trade_status(code, px, hhmm, fused)
 
         def _trade_status(self, code, px, hhmm, fused=False):
-            if code in self.t_sig:
-                return  # 信号显示优先
             book, eng, risk = self.books[code], self.t_engine[code], self.t_risk[code]
             ui = self.t_ui[code]
             pnl = book.realized_pnl()
-            if fused:
-                ui["status"].config(
-                    text=f"🔴熔断 T{pnl:+.0f} 建议平T腿控损", fg=UP_COLOR)
-                return
             flags = []
             if risk.no_sell:
                 flags.append("停卖")
@@ -407,13 +413,21 @@ def _build_app():
                 t += f" 卖{(above / px - 1) * 100:+.1f}%"
             if flags:
                 t += " ⚠" + "/".join(flags)
-            # 每 tick 决策日志（监控用）：价格/中枢/最近档距/风控/是否挂单
+            # 每 tick 决策日志（监控用）：价格/中枢/最近档距/风控/是否挂单。
+            # 必须在下面两处 early return 之前写——否则挂单期间和熔断期间日志空白，
+            # 自检会把这段空白误判成「引擎停顿/崩溃」（2026-07-29 前连续三天误报）。
             _trade_log(
                 f"{code} px={px:.2f} center={eng.center:.2f} "
                 f"买档{below and f'{below:.2f}({(below/px-1)*100:+.2f}%)' or '-'} "
                 f"卖档{above and f'{above:.2f}({(above/px-1)*100:+.2f}%)' or '-'} "
                 f"pnl={pnl:+.0f} flags={'/'.join(flags) or '-'} "
                 f"sig={'挂单中' if code in self.t_sig else '-'}")
+            if code in self.t_sig:
+                return                    # 信号显示优先，不覆盖状态栏
+            if fused:
+                ui["status"].config(
+                    text=f"🔴熔断 T{pnl:+.0f} 建议平T腿控损", fg=UP_COLOR)
+                return
             today = time.strftime("%Y-%m-%d")
             if hhmm >= "1500" and self.t_summary.get(code) != today:
                 self.t_summary[code] = today
@@ -454,9 +468,10 @@ def _build_app():
 
         def _sig_expire(self, code, sig):
             if self.t_sig.get(code) is sig:
-                self.t_engine[code].expire(sig)
+                self.t_engine[code].expire(sig, ts=time.time())
                 self._sig_hide(code)
-                _trade_log(f"{code} 信号超时过期(5分钟未处理)，档位重新武装")
+                _trade_log(f"{code} 信号超时过期(5分钟未处理)，"
+                           f"档位冷却 {ta.EXPIRE_COOLDOWN // 60} 分钟后重新武装")
 
         def _sig_fill(self, code):
             sig = self.t_sig.get(code)

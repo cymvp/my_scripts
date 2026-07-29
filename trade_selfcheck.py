@@ -60,7 +60,10 @@ def diagnose(day):
         # 掠过买/卖档但没触发的次数
         graze_buy = sum(1 for t in ticks if t["buy"] and 0 <= (t["px"] - t["buy"]) / t["buy"] <= GRAZE)
         graze_sell = sum(1 for t in ticks if t["sell"] and 0 <= (t["sell"] - t["px"]) / t["px"] <= GRAZE)
-        # 引擎停顿：相邻 tick 间隔 > 30s。区分"成交弹窗阻塞(正常)"与"疑似崩溃"
+        # 日志空白 ≠ 引擎卡死。两类空白必须排除，否则会误报（2026-07-29 之前连续三天误报）：
+        #   1) 午间休市 11:30-13:00，引擎按设计不喂 tick；
+        #   2) 信号挂单期间，修复前 _trade_status 的 early return 会跳过日志（已修，旧日志仍有）。
+        # 只有「非休市、且两端都没有信号事件」的长空白才算疑似崩溃。
         fmt = "%Y-%m-%d %H:%M:%S"
         ev_secs = []
         for e in events.get(code, []):
@@ -72,7 +75,10 @@ def diagnose(day):
             ta_, tb = datetime.strptime(a["ts"], fmt), datetime.strptime(b["ts"], fmt)
             if (tb - ta_).total_seconds() <= 30:
                 continue
-            # 停顿两端 90s 内有信号/成交事件 → 弹窗阻塞，正常
+            # 跨午间休市的空白：正常
+            if ta_.strftime("%H%M") <= "1130" and tb.strftime("%H%M") >= "1300":
+                continue
+            # 空白两端 90s 内有信号/成交事件 → 挂单期日志盲区或成交弹窗，正常
             near_event = any(abs((ta_ - ev).total_seconds()) < 90 or
                              abs((tb - ev).total_seconds()) < 90 for ev in ev_secs)
             if not near_event:

@@ -13,7 +13,27 @@ DEFAULT_STEP = 0.006   # 回测选定：0.6% + 趋势停手（21天日均+1.26%/
 N_LEVELS = 5
 PAIR_STEPS = 2         # 配对目标 = 2 个档距
 SIGNAL_TTL = 300       # 信号 5 分钟未回报则过期、档位重新武装
+EXPIRE_COOLDOWN = 600  # 超时过期的档位冷却 10 分钟再武装（防价格贴档抖动反复刷同一信号）
 CUTOFF_HHMM = "1445"   # 之后不开新 T
+
+# A 股交易时段：上午 09:30-11:30、下午 13:00-15:00。
+# 午间休市行情冻结，若不排除会用一个半小时前的陈旧价触发假信号（2026-07-29 实际发生过）。
+SESSIONS = (("0930", "1130", "am"), ("1300", "1500", "pm"))
+
+
+def session_of(hhmm):
+    """返回 'am' / 'pm' / 'break'（午间休市）/ 'closed'（盘前盘后）。"""
+    for start, end, name in SESSIONS:
+        if start <= hhmm <= end:
+            return name
+    if SESSIONS[0][1] < hhmm < SESSIONS[1][0]:
+        return "break"
+    return "closed"
+
+
+def in_trading_session(hhmm):
+    """是否在可交易时段内（午间休市与盘前盘后均为 False）。"""
+    return session_of(hhmm) in ("am", "pm")
 DAILY_LIMIT_RATIO = 0.30
 FUSE_RATIO = 0.02      # 日内最大亏损熔断线 = 资金池 × 2%（回测校准）
 RECENTER_STEPS = 2     # 价格驱动中枢：价格偏离中枢达 N 档就把中枢移到现价（回测选 2 档）
@@ -75,12 +95,32 @@ class GridEngine:
         self.levels = grid_levels(prev_close, step, n_levels)
         self.n_arm, self.qty = plan_levels(t_pool, prev_close, n_levels)
         self.triggered = set()   # 已触发（今日不再触发，除非 expire）
+        self.cooldown = {}       # key -> 冷却截止时间戳（超时过期的档位不立即武装）
+
+    def _triggered_prices(self):
+        """当前已触发档位对应的价格，供重锚时判定重叠。"""
+        out = []
+        for side, i in self.triggered:
+            lvs = self.levels["buy" if side == "B" else "sell"]
+            if i < len(lvs):
+                out.append(lvs[i])
+        return out
 
     def recenter(self, new_center):
-        """把中枢移到 new_center：重算档位并清空已触发（新价格区间是新战场）。"""
+        """把中枢移到 new_center：重算档位并清空已触发（新价格区间是新战场）。
+
+        但与刚触发过的旧档位重叠的新档位要保留「已触发」标记——否则重锚后新买档
+        可能正好落在刚成交的旧卖档上，产生卖了立刻买回、白付两笔手续费的信号。
+        """
+        old_prices = self._triggered_prices()
         self.center = new_center
         self.levels = grid_levels(new_center, self.step, self.n_levels)
         self.triggered = set()
+        tol = self.step * new_center / 2      # 半档以内视为同一价位
+        for side, key in (("buy", "B"), ("sell", "S")):
+            for i, lv in enumerate(self.levels[side]):
+                if any(abs(lv - p) <= tol for p in old_prices):
+                    self.triggered.add((key, i))
 
     def roll(self, price):
         """价格驱动追踪：现价偏离中枢达 recenter_steps 档，就把中枢移到现价。
@@ -95,30 +135,38 @@ class GridEngine:
             self.levels = grid_levels(center, self.step, self.n_levels)
         self.triggered = {tuple(t) for t in (triggered or [])}
 
-    def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False):
-        """价格从 prev_px 走到 px：返回触发的信号列表（通常 0 或 1 个）。"""
-        if hhmm > CUTOFF_HHMM or self.qty == 0:
+    def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False, ts=None):
+        """价格从 prev_px 走到 px：返回触发的信号列表（通常 0 或 1 个）。
+
+        ts 为当前时间戳，用于跳过超时过期后仍在冷却期的档位；不传则不做冷却判断。
+        """
+        if hhmm > CUTOFF_HHMM or self.qty == 0 or not in_trading_session(hhmm):
             return []
         out = []
         for i, lv in enumerate(self.levels["buy"][: self.n_arm]):
             key = ("B", i)
-            if key in self.triggered or no_buy:
+            if key in self.triggered or no_buy or self._cooling(key, ts):
                 continue
             if prev_px > lv >= px:       # 下穿
                 self.triggered.add(key)
                 out.append(Signal("B", i, lv, self.qty))
         for i, lv in enumerate(self.levels["sell"][: self.n_arm]):
             key = ("S", i)
-            if key in self.triggered or no_sell:
+            if key in self.triggered or no_sell or self._cooling(key, ts):
                 continue
             if prev_px < lv <= px:       # 上穿
                 self.triggered.add(key)
                 out.append(Signal("S", i, lv, self.qty))
         return out
 
-    def expire(self, signal):
-        """信号超时未成交：档位重新武装。"""
+    def _cooling(self, key, ts):
+        return ts is not None and self.cooldown.get(key, 0) > ts
+
+    def expire(self, signal, ts=None):
+        """信号超时未成交：档位重新武装，但进入冷却期，避免贴档抖动反复刷同一信号。"""
         self.triggered.discard(signal.key)
+        if ts is not None:
+            self.cooldown[signal.key] = ts + EXPIRE_COOLDOWN
 
 
 class RiskGuard:

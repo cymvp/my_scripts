@@ -88,13 +88,21 @@ def test_risk_no_buy_blocks_buy_side():
 
 # --- 追踪网格（roll / recenter）------------------------------------------
 
-def test_recenter_moves_levels_and_clears_triggered():
+def test_recenter_moves_levels_and_keeps_only_overlapping_triggered():
+    """重锚重算档位；已触发标记只保留「与刚触发价位重叠的新档」，其余清空。
+
+    2026-07-29 修正前的行为是无条件清空，导致重锚后新档落在刚成交的旧档价位上
+    会立刻反向触发（卖了立刻买回，白付两笔手续费）。
+    """
     e = make_engine(prev_close=1000.0, step=0.009)
-    e.check(prev_px=992.0, px=990.5, hhmm="1000")   # 触发买1档
+    e.check(prev_px=992.0, px=990.5, hhmm="1000")   # 触发买1档（价位 991.0）
     assert ("B", 0) in e.triggered
     e.recenter(1010.0)                               # 中枢上移
     assert abs(e.levels["buy"][0] - 1010.0 * 0.991) < 1e-6
-    assert e.triggered == set()                      # 跳格清空触发
+    # 新买2档 = 1010*0.982 = 991.82，与刚触发的 991.0 相差 0.82 < 半档(4.55)，保留标记
+    assert ("B", 1) in e.triggered
+    # 新买1档 1000.91 离 991.0 超过半档，应已清空
+    assert ("B", 0) not in e.triggered
 
 
 def test_roll_price_driven_threshold():
@@ -309,3 +317,57 @@ def test_config_roundtrip(tmp_path):
     # 权限 600
     import os, stat
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+
+
+# ---- 2026-07-29 自检发现的四个缺陷（先写失败测试，再修）----
+
+def test_expire_then_same_level_has_cooldown():
+    """同一档位超时后不应立即重新武装，否则价格在档位附近抖动会反复刷同一信号。
+    真实案例 2026-07-29：14:24:09 出 B@946.01，14:29 超时，14:30:14 又出 B@946.01。"""
+    eng = ta.GridEngine(1000.0, t_pool=500000.0)
+    lv = eng.levels["buy"][0]
+    sigs = eng.check(lv + 1, lv - 1, "1000", ts=1000.0)
+    assert len(sigs) == 1
+    eng.expire(sigs[0], ts=1300.0)          # 5 分钟后超时
+    # 冷却期内再次下穿同一档，不应再出信号
+    assert eng.check(lv + 1, lv - 1, "1000", ts=1310.0) == []
+    # 冷却期过后可以恢复
+    assert len(eng.check(lv + 1, lv - 1, "1000", ts=1300.0 + ta.EXPIRE_COOLDOWN + 1)) == 1
+
+
+def test_recenter_skips_new_level_overlapping_old_triggered():
+    """重锚后，与刚触发过的旧档位重叠的新档位应视为已触发——否则会出现
+    「卖 936.38 → 重锚 → 立刻买 936.35」这种卖了又买回、必亏手续费的信号。
+    真实案例 2026-07-28 10:27→10:28。"""
+    eng = ta.GridEngine(930.80, t_pool=5000000.0)
+    sell0 = eng.levels["sell"][0]
+    sigs = eng.check(sell0 - 1, sell0 + 1, "1027")     # 上穿第一卖档
+    assert len(sigs) == 1 and sigs[0].side == "S"
+    eng.roll(sell0 * 1.0121)                           # 价格续涨触发重锚
+    # 重锚后若有新买档落在刚成交的旧卖档附近，不得立刻反向触发
+    for i, lv in enumerate(eng.levels["buy"][: eng.n_arm]):
+        if abs(lv - sell0) <= eng.step * eng.center / 2:
+            assert ("B", i) in eng.triggered, f"新买档{lv:.2f}与旧卖档{sell0:.2f}重叠却未标记已触发"
+
+
+def test_lunch_break_is_not_trading():
+    """A 股 11:30-13:00 午间休市，行情冻结，此时不得出信号。
+    真实案例 2026-07-29：12:59:59 用冻结价出 B@912.74，13:00:15 立刻反向 S@911.19，
+    两笔都做每股亏 1.55 元。"""
+    assert ta.in_trading_session("0930") is True
+    assert ta.in_trading_session("1129") is True
+    assert ta.in_trading_session("1131") is False      # 休市
+    assert ta.in_trading_session("1200") is False
+    assert ta.in_trading_session("1259") is False
+    assert ta.in_trading_session("1300") is True
+    assert ta.in_trading_session("1459") is True
+    assert ta.in_trading_session("1501") is False
+    assert ta.in_trading_session("0925") is False      # 集合竞价未开盘
+
+
+def test_session_of_distinguishes_morning_and_afternoon():
+    """需要区分上午/下午场，才能在 13:00 首个 tick 只重锚、不触发跨休市的假信号。"""
+    assert ta.session_of("1000") == "am"
+    assert ta.session_of("1200") == "break"
+    assert ta.session_of("1400") == "pm"
+    assert ta.session_of("1530") == "closed"
