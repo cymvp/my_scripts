@@ -3,10 +3,12 @@
 数据源：新浪 L1 行情（约 3 秒快照）。
 运行：/usr/bin/python3 stock_watch.py
 """
+import datetime
 import json
 import os
 import re
 import urllib.request
+import zoneinfo
 
 SINA_URL = "https://hq.sinajs.cn/list="
 SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}
@@ -17,8 +19,14 @@ _SINA_LINE = re.compile(r'hq_str_(\w+)="([^"]*)"')
 
 
 def normalize_code(raw):
-    """股票代码加市场前缀。6 位 -> A 股(sh/sz/bj)，5 位 -> 港股(hk)。非法返回 None。"""
+    """股票代码加市场前缀。
+
+    6 位数字 -> A 股(sh/sz/bj)；5 位数字 -> 港股(hk)；纯字母 -> 美股(gb_ 小写)。
+    非法返回 None。
+    """
     code = raw.strip()
+    if code.isalpha():                      # 美股按代号，如 MU / SNDK / SKHY
+        return "gb_" + code.lower()
     if not code.isdigit():
         return None
     if len(code) == 5:
@@ -74,14 +82,165 @@ def parse_sina_response(text):
     return quotes
 
 
+_TENCENT_URL = "https://qt.gtimg.cn/q="
+_TENCENT_LINE = re.compile(r'v_(hk\d+)="([^"]*)"')
+_US_LINE = re.compile(r'hq_str_(gb_\w+)="([^"]*)"')
+# 美股成交时间形如 "Jul 30 04:00PM EDT"，据此判断这笔价格属于哪个时段
+_US_TIME = re.compile(r"(\d{1,2}):(\d{2})(AM|PM)")
+
+
+def _us_session(stamp):
+    """按**成交时间**（f[25]，不是 f[24] 查询时间）判断 f[1] 那个价格属于哪个时段。
+
+    盘前 4:00-9:30 / 盘中 9:30-16:00 / 盘后 16:00-20:00，正好 16:00 记「收盘」。
+
+    注意语义：这里判的是 f[1] 的归属，**不是"现在是不是盘前"**。收盘后到次日盘中
+    之间 f[1] 一直是上一次收盘价（时间戳 04:00PM），所以会一直标「收盘」；此时真正
+    的盘前实时价在 ext_price/ext_pct 里，两者分开显示。
+    """
+    m = _US_TIME.search(stamp or "")
+    if not m:
+        return "—"
+    h, mi, ap = int(m.group(1)), int(m.group(2)), m.group(3)
+    if ap == "PM" and h != 12:
+        h += 12
+    if ap == "AM" and h == 12:
+        h = 0
+    t = h * 60 + mi
+    if 4 * 60 <= t < 9 * 60 + 30:
+        return "盘前"
+    if 9 * 60 + 30 <= t < 16 * 60:
+        return "盘中"
+    if t == 16 * 60:
+        return "收盘"
+    if 16 * 60 < t <= 20 * 60:
+        return "盘后"
+    return "—"
+
+
+def _us_ext_label(now=None):
+    """当前美东时刻处在盘前/盘后时给出「前」/「后」标签，正常交易时段给空串。
+
+    ext_pct 这个字段本身不区分盘前还是盘后（两个时段共用 f[21]/f[22]/f[23]），
+    所以标签只能由当前时钟决定。正常时段返回空串，此时 f[1] 就是实时价，
+    不需要另外显示 ext。
+    """
+    now = now or datetime.datetime.now(zoneinfo.ZoneInfo("America/New_York"))
+    t = now.hour * 60 + now.minute
+    if 4 * 60 <= t < 9 * 60 + 30:
+        return "前"
+    if 16 * 60 <= t <= 20 * 60:
+        return "后"
+    return ""
+
+
+def parse_sina_us_response(text):
+    """新浪美股 gb_ 响应 -> [{code, name, change_pct, session, ok}]。
+
+    字段（2026-07-31 逐字段实测）：
+      f[0] 名称
+      f[1] **上一个正常交易时段的收盘价**（不是盘前价！）
+      f[2] 该收盘价对前一日的涨跌幅%
+      f[21] **盘前/盘后实时价**   f[22] **盘前/盘后实时涨跌幅%**   f[23] 涨跌额
+      f[24] 查询时间（跟着当前时刻走，不是成交时间）
+      f[25] **成交时间**（判断时段要用这个）
+      f[26] 上一交易日收盘价
+
+    踩过的坑（务必别再犯）：
+      1. 把 f[1]/f[2] 当盘前价——错。腾讯同源的时间戳明确写 2026-07-30 16:00:01，
+         证明 874.66 是周四收盘价。盘前真实数据在 f[21]/f[22]。
+      2. 把 f[24] 当成交时间——错，它是查询时间。用 f[24] 判时段会把周四收盘
+         的数据标成「盘前」。
+      3. f[21]/f[22]/f[23] 已验证是实时的：50 秒内两次取数三只全部跳动
+         （美光 +4.33%→+4.46%、闪迪 +5.99%→+6.38%、海力士 +7.49%→+7.57%）。
+    无盘前数据时 ext_pct 给 None，不拿收盘价冒充。
+    """
+    quotes = []
+    for code, payload in _US_LINE.findall(text):
+        f = payload.split(",")
+        if len(f) <= 2 or not f[0]:
+            quotes.append({"code": code, "name": code, "change_pct": None,
+                           "session": "—", "ext_pct": None, "ok": False})
+            continue
+        try:
+            pct = round(float(f[2]), 2)
+        except ValueError:
+            quotes.append({"code": code, "name": f[0], "change_pct": None,
+                           "session": "—", "ext_pct": None, "ok": False})
+            continue
+        q = {"code": code, "name": f[0], "change_pct": pct, "ok": True,
+             "ext_pct": None, "ext_price": None,
+             "quote_time": f[25] if len(f) > 25 else "",
+             "session": _us_session(f[25] if len(f) > 25 else "")}
+        try:
+            q["close"] = float(f[1])
+            ext_pct = float(f[22])
+            if ext_pct:                       # 0 表示当前无盘前/盘后成交
+                q["ext_pct"] = round(ext_pct, 2)
+                q["ext_price"] = float(f[21])
+        except (IndexError, ValueError):
+            pass                              # 字段不全：保留 ext_pct=None
+        quotes.append(q)
+    return quotes
+
+
+def parse_tencent_hk_response(text):
+    """腾讯港股响应 -> [{code, name, change_pct, ok}]。字段以 ~ 分隔。
+
+    为什么港股不用新浪：新浪的港股行情实测延迟十几分钟（2026-07-31 中际旭创 H 股
+    新浪报 1059、时间戳停在 10:22，腾讯同刻 1023，差 3.75 个百分点）。A 股侧新浪
+    是准实时的，所以只把港股切到腾讯。
+    腾讯字段：f[1]=名称 f[3]=现价 f[4]=昨收。
+    """
+    quotes = []
+    for code, payload in _TENCENT_LINE.findall(text):
+        f = payload.split("~")
+        if len(f) <= 4 or not f[1]:
+            quotes.append({"code": code, "name": code, "change_pct": None, "ok": False})
+            continue
+        try:
+            current, prev_close = float(f[3]), float(f[4])
+        except ValueError:
+            quotes.append({"code": code, "name": f[1], "change_pct": None, "ok": False})
+            continue
+        if prev_close == 0 or current == 0:
+            quotes.append({"code": code, "name": f[1], "change_pct": None, "ok": False})
+            continue
+        quotes.append({"code": code, "name": f[1], "ok": True,
+                       "change_pct": round((current - prev_close) / prev_close * 100, 2)})
+    return quotes
+
+
+def _fetch(url, codes, headers=None):
+    req = urllib.request.Request(url + ",".join(codes), headers=headers or {})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return resp.read().decode("gbk", errors="replace")
+
+
 def fetch_quotes(codes):
-    """批量拉取行情。codes 形如 ['sh600519', ...]。网络异常向上抛出，由界面层捕获。"""
+    """批量拉取行情。codes 形如 ['sh600519', 'hk03308', 'gb_mu', ...]。
+
+    三个市场三条路径：A 股走新浪、港股走腾讯（新浪港股延迟十几分钟，见
+    parse_tencent_hk_response）、美股走新浪 gb_（盘前价直接可见，见
+    parse_sina_us_response）。网络异常向上抛出，由界面层捕获。返回顺序与传入一致。
+    """
     if not codes:
         return []
-    req = urllib.request.Request(SINA_URL + ",".join(codes), headers=SINA_HEADERS)
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        text = resp.read().decode("gbk", errors="replace")
-    return parse_sina_response(text)
+    hk = [c for c in codes if c.startswith("hk")]
+    us = [c for c in codes if c.startswith("gb_")]
+    cn = [c for c in codes if not c.startswith(("hk", "gb_"))]
+    got = {}
+    if cn:
+        for q in parse_sina_response(_fetch(SINA_URL, cn, SINA_HEADERS)):
+            got[q["code"]] = q
+    if hk:
+        for q in parse_tencent_hk_response(_fetch(_TENCENT_URL, hk)):
+            got[q["code"]] = q
+    if us:
+        for q in parse_sina_us_response(_fetch(SINA_URL, us, SINA_HEADERS)):
+            got[q["code"]] = q
+    return [got.get(c, {"code": c, "name": c, "change_pct": None, "ok": False})
+            for c in codes]
 
 
 def load_config(path=CONFIG_PATH):
@@ -386,7 +545,9 @@ def _build_app():
                 sigs = eng.check(
                     self.t_prevpx[code], px, hhmm, ts=time.time(),
                     no_buy=risk.no_buy or risk.silence_all or limit_hit,
-                    no_sell=risk.no_sell or risk.silence_all or limit_hit)
+                    no_sell=risk.no_sell or risk.silence_all or limit_hit,
+                    # 卖出后不许在更高价买回（网格缺时间记忆，见 GridEngine.check）
+                    no_buy_above=book.last_sell_price())
                 if sigs:
                     self._sig_show(code, sigs[0])
             self.t_prevpx[code] = px
@@ -601,7 +762,19 @@ def _build_app():
                 else:
                     p = q["change_pct"]
                     color = UP_COLOR if p > 0 else DOWN_COLOR if p < 0 else FLAT_COLOR
-                    pct_lbl.config(text=f"{p:+.2f}%", fg=color)
+                    # 美股每个时段只看该时段自己的波动，始终一个数字：
+                    # 盘前看盘前涨跌幅、盘中看盘中涨跌幅、盘后看盘后涨跌幅。
+                    # 盘前/盘后时 f[1]/change_pct 是上一次收盘的既成事实、不再跳动，
+                    # 真正实时的是 ext_pct（相对上一次收盘），所以那两个时段用它。
+                    ext = q.get("ext_pct")
+                    lab = _us_ext_label()
+                    if ext is not None and lab:
+                        p = ext
+                        color = (UP_COLOR if p > 0 else
+                                 DOWN_COLOR if p < 0 else FLAT_COLOR)
+                    else:
+                        lab = ""
+                    pct_lbl.config(text=f"{lab}{p:+.2f}%", fg=color)
 
         def refresh(self):
             try:

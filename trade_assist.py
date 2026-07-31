@@ -135,10 +135,15 @@ class GridEngine:
             self.levels = grid_levels(center, self.step, self.n_levels)
         self.triggered = {tuple(t) for t in (triggered or [])}
 
-    def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False, ts=None):
+    def check(self, prev_px, px, hhmm, no_buy=False, no_sell=False, ts=None,
+              no_buy_above=None):
         """价格从 prev_px 走到 px：返回触发的信号列表（通常 0 或 1 个）。
 
         ts 为当前时间戳，用于跳过超时过期后仍在冷却期的档位；不传则不做冷却判断。
+
+        no_buy_above 传当日最近一次卖出成交价：高于它的买档一律不武装。网格只有
+        「中枢在哪」的空间记忆，没有「今天在什么价位卖过」的时间记忆，缺了这条约束
+        会在趋势行情里卖出后又更高价买回（2026-07-30 实测四卖四买倒亏约 7.6 万）。
         """
         if hhmm > CUTOFF_HHMM or self.qty == 0 or not in_trading_session(hhmm):
             return []
@@ -147,6 +152,8 @@ class GridEngine:
             key = ("B", i)
             if key in self.triggered or no_buy or self._cooling(key, ts):
                 continue
+            if no_buy_above is not None and lv > no_buy_above:
+                continue          # 高于最近卖出价，买回来必然是亏损的往返
             if prev_px > lv >= px:       # 下穿
                 self.triggered.add(key)
                 out.append(Signal("B", i, lv, self.qty))
@@ -255,6 +262,17 @@ class TradeBook:
         else:
             self.cash += qty * price - fee
         self.fills.append({"ts": ts, "side": side, "qty": qty, "price": price})
+        return None
+
+    def last_sell_price(self):
+        """当日最近一次卖出成交价；没卖过返回 None。
+
+        供 GridEngine.check 的 no_buy_above 用——禁止在高于它的价位买回。
+        取「最近一次」而非「最低一次」：语义是买回刚卖掉的那批，与 FIFO 配对一致。
+        """
+        for f in reversed(self.fills):
+            if f["side"] == "S":
+                return f["price"]
         return None
 
     def realized_pnl(self):

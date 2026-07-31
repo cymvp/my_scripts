@@ -371,3 +371,46 @@ def test_session_of_distinguishes_morning_and_afternoon():
     assert ta.session_of("1200") == "break"
     assert ta.session_of("1400") == "pm"
     assert ta.session_of("1530") == "closed"
+
+
+# ---- 2026-07-30 自检发现的策略缺陷：追踪网格缺「时间记忆」，卖出后会更高价买回 ----
+
+def test_no_buy_above_last_sell_price():
+    """已卖出后，不得在高于最近卖出成交价的档位买入——否则必然是亏损的往返。
+
+    真实案例 2026-07-30（中际旭创，日内振幅 19.77%）：
+      价格上行途中连续卖 826.19 / 836.62 / 847.14 / 858.01，
+      随后价格涨到 900 以上再回落时又连续买 890.48 / 900.61 / 889.65 / 878.91。
+      卖均价 841.99、买均价 889.91，每股倒亏 47.92 元，四笔 400 股合计约 -76,676 元。
+    根因：网格只有「当前中枢在哪」的空间记忆，缺「今天在什么价位卖过」的时间记忆。
+    """
+    eng = ta.GridEngine(858.0, t_pool=5_000_000.0)
+    # 中枢上移到 895 后，买档会落在 890 一带（高于刚才 858 的卖出价）
+    eng.recenter(895.0)
+    above = [lv for lv in eng.levels["buy"][: eng.n_arm] if lv > 858.0]
+    assert above, "构造前提不成立：重锚后应存在高于 858 的买档"
+    # 不传 no_buy_above 时照常触发（保持既有行为）
+    lv = above[0]
+    assert len(eng.check(lv + 1, lv - 1, "1400")) == 1
+    # 传入「最近卖出价 858」后，高于它的买档一律不武装
+    eng2 = ta.GridEngine(858.0, t_pool=5_000_000.0)
+    eng2.recenter(895.0)
+    assert eng2.check(lv + 1, lv - 1, "1400", no_buy_above=858.0) == []
+    # 低于最近卖出价的买档仍可触发
+    low = [x for x in eng2.levels["buy"][: eng2.n_arm] if x < 858.0]
+    if low:
+        l0 = low[0]
+        assert len(eng2.check(l0 + 1, l0 - 1, "1400", no_buy_above=858.0)) == 1
+
+
+def test_last_sell_price_from_book():
+    """TradeBook 要能给出当日最近一次卖出成交价，供上面的保护使用。"""
+    book = ta.TradeBook(stock="sz300308", base_shares=2000, cash=2_000_000.0,
+                        t_pool=2_000_000.0, date="2026-07-30")
+    assert book.last_sell_price() is None          # 未卖出时无约束
+    assert book.apply_fill("S", 400, 847.14, ts="13:23:25") is None
+    assert book.last_sell_price() == 847.14
+    assert book.apply_fill("S", 400, 858.01, ts="13:46:17") is None
+    assert book.last_sell_price() == 858.01        # 取最近一次，不是最低那次
+    assert book.apply_fill("B", 400, 800.00, ts="14:00:00") is None
+    assert book.last_sell_price() == 858.01        # 买入不影响
