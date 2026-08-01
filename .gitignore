@@ -1,3 +1,5 @@
 .DS_Store
 __pycache__/
 docs/.DS_Store
+# intraday_guide 的统计基准：1.6M，且过一段就该重跑，用 `intraday_guide.py build` 重建
+intraday_baseline.json
