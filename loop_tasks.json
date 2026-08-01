@@ -42,9 +42,11 @@
       "name": "loop_checker",
       "cron": "37 9 */3 * *",
       "prompt": "这是 loop 任务自愈检查。读取 ~/projects/my_scripts/loop_tasks.json，用 CronList 对比其中 tasks 列表：凡是 json 里登记但 CronList 中已不存在的任务（7天过期或其它原因失效），用 CronCreate 按登记的 cron 和 prompt 原样重建（包括本检查任务自身若临近过期也重建），然后把新的 job id 和重建时间更新回 loop_tasks.json，并简要汇报重建了哪些。全部健在则只回一句\"loop 任务全部健在\"。",
-      "job_id": "f7deb560",
+      "job_id": "f3fec55e",
       "created": "2026-07-27",
-      "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务"
+      "rebuilt": "2026-08-01",
+      "prev_job_id": "f7deb560",
+      "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务。2026-08-01 提前重建：原 f7deb560 建于 7/27、8/3 到期，而按 cron 下次自检要到 8/4，会错过自己的续期窗口"
     },
     {
       "name": "trade_selfcheck",
