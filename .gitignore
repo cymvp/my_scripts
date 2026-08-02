@@ -5,3 +5,5 @@ docs/.DS_Store
 intraday_baseline.json
 # breadth_recorder 的积累数据，每天一行，属于个人交易数据不进公开仓
 breadth_log.csv
+# intraday_collector 积累的分钟数据，会长到几十MB，且可用 --backfill 重建近期部分
+intraday_bars.jsonl
