@@ -295,13 +295,13 @@ def test_build_table_a_skips_cells_below_min_sample():
     assert ig.build_table_a(recs, min_n=150) == {}
 
 
-def test_build_table_b_bought_high_and_false_stop():
-    """表 B 扩展：以【成交价】为基准算「买高了」，以【开盘价】为基准算「止损虚惊」。
+def test_build_table_b_bought_high_and_back_above():
+    """表 B：以【成交价】为基准算「买高了」，以【开盘价】为基准算「触发后回到开盘上方」。
 
-    两条触发 −3% 的记录（成交价 97）：
-      收盘 96 → 低于成交价，买高了；也低于开盘价，不是虚惊
-      收盘 101 → 高于成交价，没买高；也高于开盘价，是虚惊
-    买高了 50%，虚惊 50%
+    三条记录里有两条触发 −3%（成交价 97），触发概率 2/3 = 66.7%：
+      收盘 96 → 低于成交价，买高了；也低于开盘价，没回到开盘上方
+      收盘 101 → 高于成交价，没买高；也高于开盘价，回到了开盘上方
+    买高了 50%，回到开盘上方 50%，无效止损概率 = 66.7% × 50% = 33.3%
     """
     recs = [_rec("下跌", "4~6%", 100, 100, 95, 96),
             _rec("下跌", "4~6%", 100, 102, 96, 101),
@@ -310,7 +310,8 @@ def test_build_table_b_bought_high_and_false_stop():
     d3 = b["下跌"]["4~6%"]["down"]["3"]
     assert d3["triggered"] == 2
     assert d3["bought_high"] == 50.0
-    assert d3["false_stop"] == 50.0
+    assert d3["back_above"] == 50.0
+    assert round(d3["ineffective"], 1) == 33.3
 
 
 def test_build_table_b_sell_early_is_complement_of_bought_high():
@@ -490,18 +491,19 @@ def test_parse_holdings():
 
 
 def test_stop_options_reads_both_tables():
-    """止损候选：每档给出被打掉概率、虚惊率、白挨刀占比、仓位上限。
+    """止损候选：每档给出触发概率、触发后回到开盘上方、无效止损概率、仓位上限。
 
-    白挨刀占比 = 被打掉概率 × 虚惊率。下跌 6~8% 的 −3% 档：37.6% × 20.5% = 7.7%
+    无效止损概率 = 触发概率 × 触发后回到开盘上方。下跌 6~8% 的 −3% 档：
+    37.6% × 20.5% = 7.7%，也就是每 100 个交易日有 7.7 天白止损一次。
     """
     ta = {"下跌": {"6~8%": {"n": 935, "down": {"3": 37.6, "5": 18.6}, "up": {}}}}
-    tb = {"下跌": {"6~8%": {"down": {"3": {"false_stop": 20.5}, "5": {"false_stop": 7.5}},
+    tb = {"下跌": {"6~8%": {"down": {"3": {"back_above": 20.5}, "5": {"back_above": 7.5}},
                             "up": {}}}}
     opts = ig.stop_options("下跌", "6~8%", ta, tb, total=3_000_000, risk_pct=1.0)
     o3 = [o for o in opts if o["stop_pct"] == 3][0]
-    assert o3["hit"] == 37.6
-    assert o3["false_stop"] == 20.5
-    assert round(o3["wasted"], 1) == 7.7
+    assert o3["trigger"] == 37.6
+    assert o3["back_above"] == 20.5
+    assert round(o3["ineffective"], 1) == 7.7
     assert o3["cap"] == 1_000_000
     o5 = [o for o in opts if o["stop_pct"] == 5][0]
     assert o5["cap"] == 600_000

@@ -256,10 +256,10 @@ STOP_LEVELS = (1, 2, 3, 5)
 
 
 def stop_options(trend, cell_name, table_a, table_b, total, risk_pct):
-    """给出各档止损的被打掉概率、虚惊率、白挨刀占比、以及对应的仓位上限。
+    """给出各档止损的触发概率、触发后回到开盘上方的比例、无效止损概率、仓位上限。
 
-    白挨刀占比 = 被打掉概率 × 虚惊率，也就是每 100 个交易日有几天被震出去、
-    收盘却又回到了开盘价上方。
+    无效止损概率 = 触发概率 × 触发后回到开盘上方的比例，也就是每 100 个交易日里，
+    有几天既被止损卖出、收盘价又回到了开盘价之上（不卖本来是赚的）。这是最终要看的数。
     """
     a = (table_a.get(trend) or {}).get(cell_name)
     b = (table_b.get(trend) or {}).get(cell_name, {})
@@ -267,15 +267,15 @@ def stop_options(trend, cell_name, table_a, table_b, total, risk_pct):
         return []
     out = []
     for x in STOP_LEVELS:
-        hit = a["down"].get(str(x))
-        if hit is None:
+        trig = a["down"].get(str(x))
+        if trig is None:
             continue
-        fs = (b.get("down", {}).get(str(x)) or {}).get("false_stop")
+        back = (b.get("down", {}).get(str(x)) or {}).get("back_above")
         out.append({
             "stop_pct": x,
-            "hit": hit,
-            "false_stop": fs,
-            "wasted": hit * fs / 100 if fs is not None else None,
+            "trigger": trig,
+            "back_above": back,
+            "ineffective": trig * back / 100 if back is not None else None,
             "cap": position_cap(total, risk_pct, x),
         })
     return out
@@ -482,7 +482,7 @@ def build_table_a(recs, min_n=MIN_N_DAILY):
     """表 A：某价位当天碰不碰得到的概率。
 
     向下 = 当日最低 < 开盘×(1−X) 的比例，向上 = 当日最高 > 开盘×(1+X) 的比例。
-    同一个数字，卖方读作止损被打掉的概率，买方读作限价单成交的概率。
+    同一个数字，持仓的人读作止损被触发的概率，想买的人读作限价单成交的概率。
     """
     out = {}
     for trend, cells in _group_by_cell(recs).items():
@@ -503,7 +503,8 @@ def build_table_b(recs, min_n=MIN_N_DAILY):
 
     分母是【触发日】而不是该格全部日子。三个比例的基准不同，不要混：
       bought_high 比【成交价】——买了之后继续跌
-      false_stop  比【开盘价】——止损被打掉但收盘又回到开盘上方，这一刀白挨
+      back_above  比【开盘价】——止损被触发但收盘又回到开盘上方
+      ineffective 触发概率 × back_above——当天白止损一次的概率，这是最终要看的数
       sell_early  比【成交价】——卖了之后还涨，和 bought_high 在高位挡是互补事件
     """
     out = {}
@@ -516,11 +517,14 @@ def build_table_b(recs, min_n=MIN_N_DAILY):
                 f = x / 100.0
                 hit = [r for r in rows if r["l"] < r["o"] * (1 - f)]
                 if hit:
+                    trig = len(hit) / len(rows) * 100
+                    back = sum(1 for r in hit if r["c"] > r["o"]) / len(hit) * 100
                     e["down"][str(x)] = {
                         "triggered": len(hit),
-                        "fill_rate": len(hit) / len(rows) * 100,
+                        "fill_rate": trig,
                         "bought_high": sum(1 for r in hit if r["c"] < r["o"] * (1 - f)) / len(hit) * 100,
-                        "false_stop": sum(1 for r in hit if r["c"] > r["o"]) / len(hit) * 100,
+                        "back_above": back,
+                        "ineffective": trig * back / 100,
                         "median_after": st.median(
                             [(r["c"] - r["o"] * (1 - f)) / (r["o"] * (1 - f)) * 100 for r in hit]),
                     }
@@ -1044,11 +1048,12 @@ def _print_stock(snap, data, total, risk_pct):
     if not opts:
         print("  基准缺该格，不给建议（不用默认值顶替）")
     else:
-        print(f"  {'止损':<6}{'被打掉':>8}{'其中虚惊':>10}{'白挨刀占比':>12}{'仓位上限':>12}")
+        print("  无效止损 = 当天既触发止损被卖出、收盘价又回到开盘价之上（不卖本来是赚的）")
+        print(f"  {'止损':<6}{'触发概率':>10}{'触发后回到开盘上方':>20}{'无效止损概率':>14}{'仓位上限':>12}")
         for o in opts:
-            fs = f"{o['false_stop']:.1f}%" if o["false_stop"] is not None else "—"
-            wa = f"{o['wasted']:.1f}%" if o["wasted"] is not None else "—"
-            print(f"  -{o['stop_pct']}%{'':<3}{o['hit']:>7.1f}%{fs:>10}{wa:>12}{_fmt_wan(o['cap']):>12}")
+            ba = f"{o['back_above']:.1f}%" if o["back_above"] is not None else "—"
+            inf = f"{o['ineffective']:.1f}%" if o["ineffective"] is not None else "—"
+            print(f"  -{o['stop_pct']}%{'':<4}{o['trigger']:>8.1f}%{ba:>19}{inf:>13}{_fmt_wan(o['cap']):>12}")
 
     print(f"\n[5] 挂单参考（同一张表：向下是买单成交率，向上是卖单成交率）")
     acell = (ta.get(trend) or {}).get(cell_name)
