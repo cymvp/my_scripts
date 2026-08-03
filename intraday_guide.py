@@ -23,12 +23,14 @@
   python3 intraday_guide.py advise --hold 300308=100万 --cash 50万 --t-cash 30万
                                             盘中指导：挂单、仓位、止损、纪律检查
 """
+import datetime
 import json
 import os
 import statistics as st
 import sys
 import time
 import urllib.request
+import zoneinfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(BASE_DIR, "intraday_baseline.json")
@@ -195,6 +197,45 @@ def implied_full_amplitude(walked, trend, slot, table_e):
     if not pct or walked is None:
         return None
     return walked / (pct / 100)
+
+
+MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
+
+
+def now_slot(hhmm=None):
+    """当前所处的 30 分钟时段，**按北京时间**判定。
+
+    不能用 time.strftime 取本机时间：2026-08-03 踩过，本机时区是 JST 比北京快
+    1 小时，本机 14:51 实际是北京 13:51，工具却按 15:00 查表，差了两格。
+    表 D / 表 E 都按时段索引，时段错了整段结论都错。A 股按北京时间开收盘。
+    """
+    if hhmm is None:
+        hhmm = datetime.datetime.now(MARKET_TZ).strftime("%H:%M")
+    return slot_of(hhmm)
+
+
+def is_final_slot(slot):
+    """是不是当天最后一个 30 分钟段。
+
+    最后一段的「已走%」按定义就是 100%（累计到最后一根 K 线当然等于全天），
+    剩余空间必然是 0。这个 0 不表示「今天不会再动」，而是这两个指标在收盘段
+    结构上没有信息量，输出时必须标注，不能照常给一个数。
+    """
+    return slot == SLOTS[-1]
+
+
+def group_by_trend(snapshots):
+    """按趋势把票分组，保持首次出现的顺序。取数失败的不参与。
+
+    表 D / 表 E 只按「趋势 × 时段」查，同趋势同时段的票查到的是同一格，
+    时点结构那一段每组输出一次就够，不必每只票重复。
+    """
+    out = {}
+    for code, s in snapshots.items():
+        if s.get("error") or not s.get("trend"):
+            continue
+        out.setdefault(s["trend"], []).append(code)
+    return out
 
 
 def calibration_off(pred, implied, tolerance=CALIB_TOLERANCE):
@@ -912,7 +953,7 @@ def live(code):
     if not rt or not rt[1]:
         sys.exit("实时行情取不到或今日未开盘")
     _, o, pc, cur, _, _, _ = rt
-    hhmm = time.strftime("%H:%M")
+    hhmm = datetime.datetime.now(MARKET_TZ).strftime("%H:%M")   # 北京时间，不用本机
     slot = slot_of(hhmm)
     daily = fetch_daily(code, 200)
     hi60 = max(x[2] for x in daily[-61:-1])
@@ -982,7 +1023,7 @@ def snapshot(code, table_e, at_slot=None):
             snap["gap_pct"] = (o - pc) / pc * 100
             snap["pos_vs_open"] = (last - o) / o * 100
             snap["walked_amp"] = day_amplitude(o, hi, lo)
-    snap["slot"] = at_slot or slot_of(time.strftime("%H:%M"))
+    snap["slot"] = at_slot or now_slot()
     if snap.get("walked_amp") is not None and snap.get("slot"):
         snap["implied_full_amp"] = implied_full_amplitude(
             snap["walked_amp"], snap["trend"], snap["slot"], table_e)
@@ -1009,7 +1050,12 @@ def _print_stock(snap, data, total, risk_pct):
     print(f"\n[2] 剩余波动空间")
     slot = snap.get("slot")
     ecell = (te.get(trend) or {}).get(slot) if slot else None
-    if snap.get("walked_amp") is None or not ecell:
+    if is_final_slot(slot):
+        print(f"  当前是最后一个时段（{slot}），「已走%」按定义就是 100%、剩余空间必然是 0，"
+              "\n  这两个指标在收盘段没有信息量，不输出。有用的时点是 10:00 到 13:30。")
+        if snap.get("walked_amp") is not None:
+            print(f"  今天到此刻已走振幅 {snap['walked_amp']:.2f}%，盘前预测 {snap['pred_amp']:.2f}%")
+    elif snap.get("walked_amp") is None or not ecell:
         print("  盘中数据或基准缺失，不给结论")
     else:
         print(f"  当前时段 {slot}，已走振幅 {snap['walked_amp']:.2f}%，"
@@ -1023,25 +1069,6 @@ def _print_stock(snap, data, total, risk_pct):
         if snap.get("calib_off"):
             print("  ⚠ 反推值与盘前预测相差超过 50%，今天偏离常态，"
                   "盘前定的止损和仓位要重新审视")
-
-    print(f"\n[3] 当前时点的结构")
-    dcell = (td.get(trend) or {}).get(slot) if slot else None
-    if not dcell:
-        print("  当前不在交易时段，或基准缺该格")
-    else:
-        print(f"  该段历史：为正比例 {dcell['pos_ratio']:.1f}%，"
-              f"段振幅中位 {dcell['seg_amp']:.2f}%，"
-              f"振幅/净幅比 {dcell['amp_net_ratio']:.2f}"
-              if dcell.get("amp_net_ratio") else
-              f"  该段历史：为正比例 {dcell['pos_ratio']:.1f}%，段振幅中位 {dcell['seg_amp']:.2f}%")
-        buy = "成本偏低，对建仓和加仓有利" if dcell["pos_ratio"] < 45 else "没有成本优势"
-        sell = "不利，这一段通常还在往下走" if dcell["pos_ratio"] < 45 else "相对有利"
-        print(f"  对买方：{buy}")
-        print(f"  对卖方：{sell}")
-        gain = dcell["seg_amp"] / 3 - 0.10
-        print(f"  日内往返：该段振幅 {dcell['seg_amp']:.2f}%，实际约能抓三分之一，"
-              f"扣双边成本 0.10% 后剩 {gain:+.2f}%"
-              f"{'，期望为负，不值得动手' if gain <= 0.1 else ''}")
 
     print(f"\n[4] 止损与仓位（单笔风险预算 {risk_pct}%）")
     opts = stop_options(trend, cell_name, ta, tb, total, risk_pct)
@@ -1068,6 +1095,34 @@ def _print_stock(snap, data, total, risk_pct):
     note = special_cell_note(trend, cell_name)
     if note:
         print(f"  ⚠ {note}")
+
+
+def _print_slot_structure(snaps, data, slot):
+    """时点结构按趋势输出，同趋势的票合并成一组——表 D 只按「趋势 × 时段」查。"""
+    td = data.get("table_d") or {}
+    groups = group_by_trend(snaps)
+    if not groups or not slot:
+        return
+    print(f"\n{'=' * 72}\n[3] 当前时点（{slot}）的结构 —— 按趋势分组，同趋势查到的是同一格")
+    for trend, codes in groups.items():
+        names = "、".join(snaps[c]["name"] for c in codes)
+        print(f"\n  {trend}趋势：{names}")
+        dcell = (td.get(trend) or {}).get(slot)
+        if not dcell:
+            print("    基准缺该格，不给结论")
+            continue
+        line = (f"    该段历史：为正比例 {dcell['pos_ratio']:.1f}%，"
+                f"段振幅中位 {dcell['seg_amp']:.2f}%")
+        if dcell.get("amp_net_ratio"):
+            line += f"，振幅/净幅比 {dcell['amp_net_ratio']:.2f}"
+        print(line)
+        weak = dcell["pos_ratio"] < 45
+        print(f"    对买方：{'成本偏低，对建仓和加仓有利' if weak else '没有成本优势'}")
+        print(f"    对卖方：{'不利，这一段通常还在往下走' if weak else '相对有利'}")
+        gain = dcell["seg_amp"] / 3 - 0.10
+        tail = "，期望为负，不值得动手" if gain <= 0.1 else ""
+        print(f"    日内往返：该段振幅 {dcell['seg_amp']:.2f}%，实际约能抓三分之一，"
+              f"扣双边成本 0.10% 后剩 {gain:+.2f}%{tail}")
 
 
 def advise(argv):
@@ -1119,6 +1174,9 @@ def advise(argv):
         snaps[code] = snapshot(code, te, at_slot)
         _print_stock(snaps[code], data, total, risk)
 
+    cur_slot = at_slot or now_slot()
+    _print_slot_structure(snaps, data, cur_slot)
+
     print(f"\n{'=' * 72}\n[6] 可做 T 现金分配（风险平价：权重与预测振幅成反比）")
     alloc = risk_parity({c: s.get("pred_amp") for c, s in snaps.items()}, t_cash)
     if not alloc:
@@ -1129,11 +1187,10 @@ def advise(argv):
     print("  波动最大的分得最少，这样各笔的风险敞口才相当")
 
     print(f"\n[7] 纪律检查（逐条对照 my_data/trading/交易纪律.md）")
-    slot = at_slot or slot_of(time.strftime("%H:%M"))
     checks = discipline_checks(
         {"holdings": {c[2:]: v for c, v in holdings.items()},
          "cash": cash, "total": total, "risk_pct": risk},
-        {c[2:]: s for c, s in snaps.items()}, slot)
+        {c[2:]: s for c, s in snaps.items()}, cur_slot)
     mark = {"pass": "通过", "fail": "不通过", "ask": "需回答", "info": "提示"}
     for r in checks:
         print(f"  [{mark[r['status']]}] {r['ref']:<6} {r['title']}")

@@ -552,3 +552,53 @@ def test_position_cap_check_asks_when_stop_not_chosen():
     hit = [x for x in ig.discipline_checks(_portfolio(), snaps, "11:00")
            if x["id"] == "position_cap"][0]
     assert hit["status"] == "fail"          # 10万 > 30万×1%÷5% = 6000
+
+
+# ---- 2026-08-03 实盘调用暴露的两处改进 ------------------------------------
+
+
+def test_final_slot_has_no_remaining_room_information():
+    """最后一个时段（14:30-15:00）的「已走%」按定义就是 100%，剩余空间必然是 0。
+
+    2026-08-03 14:51 实际调用时输出「剩余空间中位 0.00%，25分位 100.0% / 75分位 100.0%」，
+    看着像「今天不会再动了」，其实是这个指标在收盘段结构上就没有信息量——
+    累计到最后一根 K 线，当然等于全天。必须标注出来而不是照常输出一个 0。
+    """
+    assert ig.is_final_slot("15:00") is True
+    assert ig.is_final_slot("14:30") is False
+    assert ig.is_final_slot("10:00") is False
+    assert ig.is_final_slot(None) is False
+
+
+def test_group_by_trend_merges_same_trend_stocks():
+    """表 D / 表 E 只按「趋势 × 时段」查，同趋势同时段的票查到的是同一格。
+
+    2026-08-03 实际调用时三只票里有两只都是下跌趋势，时点结构那一段一字不差
+    输出了两遍。应该按趋势合并，每组只输出一次。
+    """
+    snaps = {"a": {"trend": "下跌"}, "b": {"trend": "下跌"}, "c": {"trend": "上涨"},
+             "d": {"error": "取数失败"}}
+    g = ig.group_by_trend(snaps)
+    assert list(g) == ["下跌", "上涨"]          # 保持首次出现的顺序
+    assert g["下跌"] == ["a", "b"]
+    assert g["上涨"] == ["c"]
+    assert "d" not in [x for v in g.values() for x in v]   # 取数失败的不参与分组
+
+
+def test_now_slot_uses_beijing_time_not_local():
+    """时段必须按北京时间判定，不能用本机时间。
+
+    2026-08-03 实盘调用时踩到：本机时区是 JST，比北京快 1 小时。
+    本机 14:51 实际是北京 13:51，正确时段是 14:00（13:30-14:00 那根），
+    而工具用本机时间算出 15:00，**查表查错了两格**——表 D/表 E 是按时段索引的，
+    时段错了整段结论都错。
+
+    A 股按北京时间开收盘，与本机时区无关。
+    """
+    import datetime, zoneinfo
+    bj = datetime.datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai"))
+    assert ig.now_slot() == ig.slot_of(bj.strftime("%H:%M"))
+    # 显式传入时间时按传入的算，方便回溯
+    assert ig.now_slot("13:51") == "14:00"
+    assert ig.now_slot("14:51") == "15:00"
+    assert ig.now_slot("09:20") is None

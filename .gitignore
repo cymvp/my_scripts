@@ -7,3 +7,5 @@ intraday_baseline.json
 breadth_log.csv
 # intraday_collector 积累的分钟数据，会长到几十MB，且可用 --backfill 重建近期部分
 intraday_bars.jsonl
+# 基准重算的日志，每周覆盖一次
+build.log
