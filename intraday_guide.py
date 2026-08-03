@@ -752,6 +752,32 @@ def fetch_daily(code, n=DAILY_BARS):
             for r in k]
 
 
+M30_STORE = os.path.join(BASE_DIR, "intraday_bars.jsonl")
+
+
+def load_m30_store(path=None):
+    """读 intraday_collector 积累的 30 分钟数据，返回 {(code, date): [8根K]}。
+
+    **不要改回每次抓接口。** 新浪 30 分钟线一次最多给 128 个交易日，
+    而这个仓库由 intraday_collector 每交易日追加，会一直长下去。
+    2026-08-03 之前 build 每次重抓，导致积累的数据从来没被用上。
+    不足 8 根的当天丢弃（停牌或半日市）。
+    """
+    out = {}
+    if not os.path.exists(path or M30_STORE):
+        return out
+    with open(path or M30_STORE, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            bars = r.get("bars") or []
+            if len(bars) == 8:
+                out[(r["code"], r["date"])] = sorted(bars, key=lambda x: x["t"])
+    return out
+
+
 def fetch_m30(code):
     """30 分钟 K 线。新浪上限 1023 根，A股每日 8 根，约 128 个交易日。"""
     u = ("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
@@ -773,7 +799,7 @@ def fetch_realtime(code):
 
 # ============ 建统计基准 ============
 
-def collect(code):
+def collect(code, m30=None):
     """把一只票的日线和 30 分钟线对齐，产出两组记录。
 
     分成两组是因为样本深度差很多：日线能取到 3 年（表 A/B 每格几百到几千个样本），
@@ -782,13 +808,7 @@ def collect(code):
     """
     daily = {r[0]: r[1:] for r in fetch_daily(code)}
     dates = sorted(daily)
-    try:
-        bars = fetch_m30(code)
-    except Exception:
-        bars = []
-    byday = {}
-    for b in bars:
-        byday.setdefault(b["day"][:10], []).append(b)
+    byday = {d: bars for (c, d), bars in (m30 or {}).items() if c == code}
 
     day_recs, m30_recs, legacy = [], [], []
     for i in range(60, len(dates)):
@@ -807,28 +827,30 @@ def collect(code):
         day_recs.append({"code": code, "date": d, "trend": trend,
                          "o": o, "h": h, "l": l, "c": cl,
                          "pred_amp": pred, "amp_cell": amp_cell(pred)})
-        if d not in byday or len(byday[d]) != 8:
+        if d not in byday:
             continue
-        bb = sorted(byday[d], key=lambda x: x["day"])
-        m30_recs.append({"code": code, "date": d, "trend": trend, "o": o,
-                         "bars": [{"t": x["day"][11:16], "o": float(x["open"]),
-                                   "h": float(x["high"]), "l": float(x["low"]),
-                                   "c": float(x["close"]), "v": float(x["volume"])}
-                                  for x in bb]})
+        bb = byday[d]
+        m30_recs.append({"code": code, "date": d, "trend": trend, "o": o, "bars": bb})
         legacy.append({"date": d, "code": code, "trend": trend, "gap": gap,
                        "gap_pct": (o - pc) / pc * 100,
                        "vol": classify_volume(v / av20 if av20 else 1),
-                       "path": [(float(x["close"]) - o) / o * 100 for x in bb],
+                       "path": [(x["c"] - o) / o * 100 for x in bb],
                        "o2c": (cl - o) / o * 100})
     return day_recs, m30_recs, legacy
 
 
 def build():
     """重建统计基准并缓存到 JSON。慢（38 只票 × 双接口取数）。"""
+    m30 = load_m30_store()
+    if not m30:
+        print(f"  ⚠ 没有 30 分钟数据（{M30_STORE} 不存在或为空），表 D/E 会是空的。"
+              f"先跑 python3 intraday_collector.py --backfill")
+    else:
+        print(f"  30 分钟仓库：{len({d for _, d in m30})} 个交易日，{len(m30)} 条记录")
     day_all, m30_all, legacy_all, per_stock = [], [], [], {}
     for code, name in POOL.items():
         try:
-            drs, mrs, lrs = collect(code)
+            drs, mrs, lrs = collect(code, m30)
         except Exception as e:                       # 单只失败不影响整体
             print(f"  {name} 取数失败：{e}")
             continue

@@ -14,12 +14,19 @@
 每天收盘后抓一次 38 只票的 30 分钟 K 线，只追加当天新增的日期，不重复写。
 数据存 intraday_bars.jsonl，一行一条 {code,date,bars:[{t,o,h,l,c,v}×8]}。
 
+它同时是「板块普涨/普跌」的数据来源。2026-08-03 合并了原 breadth_recorder.py——
+那个脚本每天单独记一行，而它记的七个字段全部能从本文件的 30 分钟数据精确重算出来
+（实测 2026-07-31 那一行，7 个字段一个小数点都不差）。合并后立刻有 136 天历史可用，
+不必再从头攒两三年。
+
 用法：
-  python3 intraday_collector.py          抓取并追加今天（收盘后跑）
-  python3 intraday_collector.py --stat   打印已积累的覆盖情况
+  python3 intraday_collector.py            抓取并追加今天（收盘后跑）
+  python3 intraday_collector.py --stat     打印已积累的覆盖情况
+  python3 intraday_collector.py --breadth  算出全部历史的板块普涨/普跌
 """
 import json
 import os
+import statistics as st
 import sys
 import time
 import urllib.request
@@ -44,6 +51,99 @@ def fetch_m30(code, datalen=40):
     req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
     raw = urllib.request.urlopen(req, timeout=25).read()
     return json.loads(raw.decode("utf-8", "ignore"))
+
+
+# --- 板块普涨/普跌（原 breadth_recorder，纯计算，不联网）--------------------
+
+MAX_ABS_GAP = 25.0     # 跳空绝对值超过它就当除权，剔除
+UP_GAP, DN_GAP = 3.0, -2.0
+STRONG, WEAK = 80.0, 50.0
+
+
+def _oc(rec):
+    """从一条记录取 (今开, 今收) = (首根 K 的开, 末根 K 的收)。"""
+    b = rec["bars"]
+    return b[0]["o"], b[-1]["c"]
+
+
+def breadth_event(up3_pct, dn2_pct):
+    """事件标签。占比 >=80% 记「强」，>=50% 记普通，都不到留空。"""
+    if up3_pct >= STRONG:
+        return "普涨-强"
+    if up3_pct >= WEAK:
+        return "普涨"
+    if dn2_pct >= STRONG:
+        return "普跌-强"
+    if dn2_pct >= WEAK:
+        return "普跌"
+    return ""
+
+
+def breadth_of_day(cur, prev):
+    """算某一天的板块宽度。cur/prev 是 {code: 记录}，prev 提供昨收。
+
+    没有前一交易日就算不出跳空，返回 None——不拿今开当昨收顶替。
+    """
+    gaps, chgs, o2cs, high, dropped = [], [], [], 0, 0
+    for code, rec in cur.items():
+        if code not in prev:
+            continue
+        pc = prev[code]["bars"][-1]["c"]
+        o, c = _oc(rec)
+        if not pc or not o:
+            continue
+        gap = (o - pc) / pc * 100
+        if abs(gap) > MAX_ABS_GAP:      # 除权日，不复权价算出的假跳空
+            dropped += 1
+            continue
+        gaps.append(gap)
+        chgs.append((c - pc) / pc * 100)
+        o2cs.append((c - o) / o * 100)
+        high += c > o
+    if not gaps:
+        return None
+    n = len(gaps)
+    up3 = sum(1 for g in gaps if g >= UP_GAP) / n * 100
+    dn2 = sum(1 for g in gaps if g <= DN_GAP) / n * 100
+    return {"n": n, "dropped": dropped, "up3_pct": up3, "dn2_pct": dn2,
+            "median_gap": st.median(gaps), "median_chg": st.median(chgs),
+            "median_o2c": st.median(o2cs), "close_high_pct": high / n * 100,
+            "event": breadth_event(up3, dn2)}
+
+
+def breadth_all(path=None):
+    """把已积累的全部数据算成逐日的板块宽度。返回 [(日期, 结果), ...]。"""
+    byday = {}
+    with open(path or STORE, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if len(r.get("bars") or []) == 8:
+                byday.setdefault(r["date"], {})[r["code"]] = r
+    days = sorted(byday)
+    out = []
+    for i in range(1, len(days)):
+        r = breadth_of_day(byday[days[i]], byday[days[i - 1]])
+        if r:
+            out.append((days[i], r))
+    return out
+
+
+def show_breadth():
+    rows = breadth_all()
+    print(f"{'日期':<12}{'n':>4}{'跳空>=3%':>10}{'跳空<=-2%':>11}{'跳空中位':>10}"
+          f"{'涨跌中位':>10}{'开→收中位':>11}{'收高率':>8}  事件")
+    for d, r in rows:
+        print(f"{d:<12}{r['n']:>4}{r['up3_pct']:>9.2f}%{r['dn2_pct']:>10.2f}%"
+              f"{r['median_gap']:>9.2f}%{r['median_chg']:>9.2f}%{r['median_o2c']:>10.2f}%"
+              f"{r['close_high_pct']:>7.2f}%  {r['event']}")
+    ev = [(d, r) for d, r in rows if r["event"]]
+    print(f"\n共 {len(rows)} 个交易日，其中普涨/普跌事件 {len(ev)} 天：")
+    for d, r in ev:
+        print(f"  {d}  {r['event']}（跳空中位 {r['median_gap']:+.2f}%，"
+              f"开→收中位 {r['median_o2c']:+.2f}%，收高率 {r['close_high_pct']:.0f}%）")
 
 
 def load_existing():
@@ -124,7 +224,9 @@ def stat(brief=False):
 
 
 if __name__ == "__main__":
-    if "--stat" in sys.argv:
+    if "--breadth" in sys.argv:
+        show_breadth()
+    elif "--stat" in sys.argv:
         stat()
     elif "--backfill" in sys.argv:
         # 首次回填：把接口能给的全部历史（约 128 个交易日）一次性灌进来

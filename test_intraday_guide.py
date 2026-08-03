@@ -1,4 +1,6 @@
 """intraday_guide 纯函数的单元测试（不联网、不依赖行情）。"""
+import json
+
 import pytest
 
 import intraday_guide as ig
@@ -602,3 +604,33 @@ def test_now_slot_uses_beijing_time_not_local():
     assert ig.now_slot("13:51") == "14:00"
     assert ig.now_slot("14:51") == "15:00"
     assert ig.now_slot("09:20") is None
+
+
+def test_build_reads_accumulated_store_not_api(tmp_path):
+    """build 的 30 分钟数据必须从 intraday_collector 积累的仓库读，不能每次重抓接口。
+
+    2026-08-03 发现的设计缺陷：build 有自己的 fetch_m30，每次向新浪要 datalen=1023，
+    永远只能拿到接口给的 128 个交易日；而 intraday_bars.jsonl 已经攒到 137 天且还在长。
+    结果是 intraday_collector 每天积累的数据【从来没被用上】，随着时间推移差距只会拉大。
+
+    读仓库之后，攒多少就能用多少，这才是 intraday_collector 存在的意义。
+    """
+    store = tmp_path / "bars.jsonl"
+    bars = [{"t": t, "o": 10.0, "h": 11.0, "l": 9.0, "c": 10.5, "v": 100.0}
+            for t in ("10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30", "15:00")]
+    with open(store, "w", encoding="utf-8") as fh:
+        for d in ("2026-07-30", "2026-07-31"):
+            fh.write(json.dumps({"code": "sz300308", "date": d, "bars": bars}) + "\n")
+        fh.write(json.dumps({"code": "sz300502", "date": "2026-07-31", "bars": bars}) + "\n")
+        fh.write(json.dumps({"code": "sz300394", "date": "2026-07-31", "bars": bars[:4]}) + "\n")
+
+    got = ig.load_m30_store(str(store))
+    assert set(got) == {("sz300308", "2026-07-30"), ("sz300308", "2026-07-31"),
+                        ("sz300502", "2026-07-31")}      # 不足 8 根的被丢掉
+    assert len(got[("sz300308", "2026-07-31")]) == 8
+    assert got[("sz300308", "2026-07-31")][0]["t"] == "10:00"
+
+
+def test_load_m30_store_missing_file_returns_empty():
+    """仓库不存在时返回空字典，让 build 明确报「没有 30 分钟数据」，不静默去抓接口。"""
+    assert ig.load_m30_store("/nonexistent/path/bars.jsonl") == {}

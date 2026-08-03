@@ -95,7 +95,7 @@ CheckResult  = {id, title, status, detail}   # status ∈ pass / fail / ask / in
 |---|---|---|
 | 趋势状态、预测振幅 | 腾讯前复权日线 | 每只票 300 根 |
 | 当日分时（已走振幅、当前价） | 新浪 30 分钟线 | 当日 |
-| 板块普涨普跌 | 复用 `breadth_recorder.py` | 当日快照 |
+| 板块普涨普跌 | `intraday_collector.breadth_all()`（从已积累的 30 分钟数据算） | 全部历史 |
 
 **同一分析只用同一个数据源**——新浪 30 分钟线是不复权原始价、腾讯日线是前复权，
 混算会出错（2026-08-02 踩过，寒武纪出现 +60% 的假日内涨幅）。
@@ -298,7 +298,7 @@ skill 在该股样本 ≥25 个交易日时附带显示它自己的值作为参�
 |---|---|
 | `intraday_guide.py` | 改造成后端。新增 `advise` 子命令，`build` 扩展为生成表 A~E |
 | `intraday_collector.py` | 不变。继续每交易日 15:22 积累 30 分钟数据 |
-| `breadth_recorder.py` | 不变。`advise` 复用它的快照函数判断普涨普跌 |
+| ~~`breadth_recorder.py`~~ | **2026-08-03 删除**。它记的七个字段全部能从 `intraday_bars.jsonl` 精确重算（实测 8 个字段一个小数点不差），已并入 `intraday_collector.py --breadth`。合并后立刻有 136 天历史、18 个普涨/普跌事件，不必从 1 天开始攒 |
 | `intraday_baseline.json` | 结构重写。已在 `.gitignore` 里，不进仓库 |
 
 ---

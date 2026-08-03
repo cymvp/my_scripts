@@ -3,8 +3,6 @@ __pycache__/
 docs/.DS_Store
 # intraday_guide 的统计基准：1.6M，且过一段就该重跑，用 `intraday_guide.py build` 重建
 intraday_baseline.json
-# breadth_recorder 的积累数据，每天一行，属于个人交易数据不进公开仓
-breadth_log.csv
 # intraday_collector 积累的分钟数据，会长到几十MB，且可用 --backfill 重建近期部分
 intraday_bars.jsonl
 # 基准重算的日志，每周覆盖一次
