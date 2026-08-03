@@ -12,6 +12,13 @@
 唯一能长期突破的办法是自己每天抓、慢慢存。一年后有 250 个交易日，两年 500 个。
 
 每天收盘后抓一次 38 只票的 30 分钟 K 线，只追加当天新增的日期，不重复写。
+
+**容错很好，不必担心漏跑**：新浪给的是最近 128 个交易日的**滚动窗口**，
+加上按 (code, date) 去重后追加，所以漏跑的日子只要还在取数窗口内，下次运行自动补齐。
+日常取 DAILY_DATALEN=240 根覆盖 30 个交易日，漏 29 天以内自愈；
+漏更多跑 --backfill 能补到 128 天；只有连续漏超过 128 个交易日才会永久丢。
+
+**真正的隐患是写错而不是漏抓**，见 should_write() 的说明。
 数据存 intraday_bars.jsonl，一行一条 {code,date,bars:[{t,o,h,l,c,v}×8]}。
 
 它同时是「板块普涨/普跌」的数据来源。2026-08-03 合并了原 breadth_recorder.py——
@@ -24,12 +31,14 @@
   python3 intraday_collector.py --stat     打印已积累的覆盖情况
   python3 intraday_collector.py --breadth  算出全部历史的板块普涨/普跌
 """
+import datetime
 import json
 import os
 import statistics as st
 import sys
 import time
 import urllib.request
+import zoneinfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE = os.path.join(BASE_DIR, "intraday_bars.jsonl")
@@ -40,11 +49,36 @@ except ImportError:
     POOL = {}
 
 
-def fetch_m30(code, datalen=40):
+MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
+CLOSE_HHMM = (15, 5)      # 北京 15:00 收盘，留 5 分钟给数据源结算
+DAILY_DATALEN = 240       # 30 个交易日（8 根/天）。自愈窗口 29 天，见 should_write 的说明
+
+
+def should_write(date_str, now_bj=None):
+    """这个日期的数据现在能不能写进仓库。
+
+    **收盘前抓到的当天数据，末根 K（14:30-15:00）是残缺的。**
+    而脚本唯一的校验是「len(bars) != 8 就跳过」——新浪在盘中就会建好第 8 根，
+    只是收盘价还是当时的价，len==8 成立，残缺值就被写进去；又因为按 (code, date)
+    去重，第二天再跑也不会覆盖，**错值永久留下且不报错**。
+
+    比漏抓严重得多：漏抓能自动补（新浪给的是最近 128 个交易日的滚动窗口，
+    日常取 DAILY_DATALEN 根就覆盖 30 个交易日），写错不能自动改。
+    """
+    now = now_bj or datetime.datetime.now(MARKET_TZ)
+    today = now.date().isoformat()
+    if date_str > today:            # 时钟异常
+        return False
+    if date_str < today:            # 往期数据早就定型
+        return True
+    return (now.hour, now.minute) >= CLOSE_HHMM
+
+
+def fetch_m30(code, datalen=DAILY_DATALEN):
     """新浪 30 分钟 K 线。
 
-    日常增量取 40 根（覆盖最近 5 个交易日）即可，不必每次拉满。
-    首次回填用 datalen=1023，把接口能给的 128 个交易日一次性灌进来。
+    日常增量取 DAILY_DATALEN 根（30 个交易日）；首次回填用 1023 根，
+    把接口能给的 128 个交易日一次性灌进来。
     """
     u = ("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
          f"?symbol={code}&scale=30&datalen={datalen}")
@@ -161,12 +195,13 @@ def load_existing():
     return seen
 
 
-def collect(datalen=40):
+def collect(datalen=DAILY_DATALEN):
     if not POOL:
         sys.exit("样本池为空：intraday_guide.POOL 导入失败")
     seen = load_existing()
     added = 0
     failed = []
+    skipped_open = set()
     with open(STORE, "a", encoding="utf-8") as fh:
         for code, name in POOL.items():
             try:
@@ -179,6 +214,9 @@ def collect(datalen=40):
                 byday.setdefault(b["day"][:10], []).append(b)
             for d, bb in byday.items():
                 if len(bb) != 8 or (code, d) in seen:
+                    continue
+                if not should_write(d):
+                    skipped_open.add(d)
                     continue
                 bb = sorted(bb, key=lambda x: x["day"])
                 try:
@@ -194,6 +232,10 @@ def collect(datalen=40):
                 added += 1
             time.sleep(0.15)
     print(f"新增 {added} 条（股票-交易日）")
+    if skipped_open:
+        print(f"跳过未收盘的日期：{'、'.join(sorted(skipped_open))}"
+              f"（北京时间 {CLOSE_HHMM[0]}:{CLOSE_HHMM[1]:02d} 之后才写，"
+              f"避免把残缺的末根 K 存进去；下次运行会自动补）")
     if failed:
         print(f"取数失败：{', '.join(failed)}")
     stat(brief=True)
@@ -202,7 +244,8 @@ def collect(datalen=40):
 def stat(brief=False):
     if not os.path.exists(STORE):
         sys.exit(f"还没有数据：{STORE}")
-    codes, dates, n = set(), set(), 0
+    codes, n = set(), 0
+    byday = {}
     with open(STORE, encoding="utf-8") as fh:
         for line in fh:
             try:
@@ -210,12 +253,22 @@ def stat(brief=False):
             except ValueError:
                 continue
             codes.add(r["code"])
-            dates.add(r["date"])
+            byday.setdefault(r["date"], set()).add(r["code"])
             n += 1
-    ds = sorted(dates)
+    ds = sorted(byday)
     size = os.path.getsize(STORE) / 1024 / 1024
+    full = [d for d in ds if len(byday[d]) >= len(POOL)]
+    part = [(d, len(byday[d])) for d in ds if len(byday[d]) < len(POOL)]
     print(f"已积累：{len(codes)} 只票 × {len(ds)} 个交易日 = {n} 条，{size:.1f} MB")
     print(f"  区间 {ds[0]} ~ {ds[-1]}")
+    print(f"  **{len(POOL)} 只全齐的交易日：{len(full)} 天**"
+          + (f"（{full[0]} ~ {full[-1]}）" if full else ""))
+    if part and not brief:
+        print(f"  不齐的 {len(part)} 天（回填时各票的接口回溯深度不同，或当天有停牌）：")
+        for d, c in part[:6]:
+            print(f"    {d}: {c} 只")
+        if len(part) > 6:
+            print(f"    …… 其余 {len(part)-6} 天")
     if not brief:
         print(f"  参考：新浪 30 分钟接口一次最多给 128 个交易日，"
               f"当前已{'超过' if len(ds) > 128 else '未超过'}该上限")

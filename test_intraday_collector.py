@@ -66,3 +66,46 @@ def test_breadth_labels_event():
 def test_breadth_needs_previous_day():
     """没有前一交易日就算不出跳空，返回 None 而不是拿今开当昨收。"""
     assert ic.breadth_of_day({"A": _day("A", 100, 101)}, {}) is None
+
+
+# --- 收盘检查（2026-08-03 加，防止把未收盘的当天写进仓库）-------------------
+
+def test_refuses_to_write_today_before_close():
+    """A 股 15:00 北京时间收盘。收盘前抓到的当天数据末根 K 是残缺的。
+
+    2026-08-03 查出来的隐患：cron 是 `22 15 * * 1-5`，按本机 JST 触发 = 北京 14:22，
+    加实测约 +30 分钟延迟 ≈ 北京 14:52，**收盘前 8 分钟就抓**。
+    而脚本唯一的校验是「len(bars) != 8 就跳过」——如果新浪那时已经建好了第 8 根
+    （14:30-15:00）只是收盘价还是当时的价，len==8 成立，残缺的收盘价就被写进仓库。
+    又因为按 (code, date) 去重，第二天再跑也不会覆盖，**错值永久留下且不报错**。
+
+    比漏抓严重得多：漏抓能自动补，写错不能自动改。
+    """
+    import datetime, zoneinfo
+    BJ = zoneinfo.ZoneInfo("Asia/Shanghai")
+    def bj(h, m, day=3):
+        return datetime.datetime(2026, 8, day, h, m, tzinfo=BJ)
+
+    # 当天，收盘前 → 不写
+    assert ic.should_write("2026-08-03", bj(14, 52)) is False
+    assert ic.should_write("2026-08-03", bj(15, 4)) is False
+    # 当天，收盘后留足结算时间 → 写
+    assert ic.should_write("2026-08-03", bj(15, 5)) is True
+    assert ic.should_write("2026-08-03", bj(16, 52)) is True
+    # 往期日期，任何时刻都可以写
+    assert ic.should_write("2026-07-31", bj(9, 30)) is True
+    assert ic.should_write("2026-07-31", bj(14, 52)) is True
+    # 未来日期（时钟异常）不写
+    assert ic.should_write("2026-08-04", bj(16, 0)) is False
+
+
+def test_daily_fetch_window_covers_a_month():
+    """日常增量的 datalen 要够大，让漏跑能自动补齐。
+
+    新浪给的是最近 128 个交易日的滚动窗口，且脚本按 (code, date) 去重后追加，
+    所以漏跑的日子只要还在取数窗口内，下一次运行就会自动补上。
+    datalen=40 只覆盖 5 个交易日（自愈窗口 4 天），提到 240 覆盖 30 个交易日
+    （自愈窗口 29 天）。一次请求，成本没差别。
+    """
+    assert ic.DAILY_DATALEN == 240
+    assert ic.DAILY_DATALEN % 8 == 0          # A 股一天 8 根，整除才是整数天
