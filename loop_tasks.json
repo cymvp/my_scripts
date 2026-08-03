@@ -62,38 +62,32 @@
       "active": true
     },
     {
-      "name": "trade_selfcheck",
-      "cron": "30 16 * * 1-5",
-      "prompt": "跑 python3 ~/projects/my_scripts/trade_selfcheck.py，把当天做T自检结果读一遍。若发现 ⚠ 异常项，分析根因并给我改进建议（档距/中枢阈值/触发方式/风控），重要的推 Slack；一切正常则简短说\"做T自检通过\"。这是自我观测，不要等我来发现问题。",
-      "job_id": "4fa480a5",
-      "created": "2026-07-27",
-      "desc": "交易日收盘后(16:30 JST≈15:30 BJT)自动扫 trade_assist.log 做自检，异常主动报告",
-      "prev_job_id": "0b13277c",
-      "active": true,
-      "rebuilt": "2026-08-03"
-    },
-    {
       "name": "intraday_daily",
       "cron": "0 16 * * 1-5",
       "prompt": "交易日收盘后的日内数据流水线，两步串联：第一步 cd ~/projects/my_scripts && python3 intraday_collector.py（抓当天 30 分钟 K 线并追加）；第二步 python3 intraday_guide.py build（读仓库 + 抓日线，重算表 A/B/D/E）。报告：新增多少条、38 只全齐的交易日累计多少天、日线和 30 分钟各多少股票日、表 A 填满几格。若第一步输出「跳过未收盘的日期」，说明触发太早，报告并提醒调整 cron。若某只票取数失败，列出票名和原因。重算完抽查「下跌 × 6~8% × −3%」这一格与 ~/projects/my_data/trading/查表手册.md 的 37.6% 对照，偏差超过 1 个百分点要报告。不要做其他分析，不要给方向判断。",
-      "job_id": null,
-      "active": false,
+      "job_id": "3a438f1d",
+      "active": true,
       "created": "2026-08-03",
       "replaces": [
         {
           "name": "intraday_collector",
           "cron": "22 15 * * 1-5",
-          "job_id": "6006f792"
+          "job_id": "6006f792",
+          "cancelled": "2026-08-03",
+          "note": "job 已 CronDelete，不再触发"
         },
         {
           "name": "intraday_baseline_rebuild",
           "cron": "47 20 * * 6",
-          "job_id": "9e665dc8"
+          "job_id": "9e665dc8",
+          "cancelled": "2026-08-03",
+          "note": "job 已 CronDelete，不再触发"
         }
       ],
-      "desc": "合并原 intraday_collector（每交易日）和 intraday_baseline_rebuild（每周六）。合并理由：第二步的输入就是第一步的输出，分开跑还错开一周不合逻辑——实测表格晚刷新一周，最大格子差 5.5 个百分点（下跌×>8% 的 −3% 触发概率 58.3% 对 63.8%），而那一格样本只有 566 个、正是当前持仓所在的格子。每天重算多花约 2 分钟，把最大误差从 5.5pp 压到 1.4pp。cron 时点：本机 JST 16:00 触发 + 实测约 30 分钟延迟 ≈ 北京 15:30，收盘后半小时。**原 intraday_collector 的 22 15 会在北京 14:52 触发，收盘前 8 分钟抓，会把残缺的末根 K 永久写进仓库且不报错**——已在代码层加 should_write() 兜底：北京时间不到 15:05 不写当天数据。容错：新浪给的是最近 128 个交易日的滚动窗口，日常取 240 根覆盖 30 个交易日，漏跑 29 天以内下次自动补齐；漏更多跑 --backfill 可补到 128 天；只有连续漏超过 128 个交易日才会永久丢数据。"
+      "desc": "合并原 intraday_collector（每交易日）和 intraday_baseline_rebuild（每周六）。合并理由：第二步的输入就是第一步的输出，分开跑还错开一周不合逻辑——实测表格晚刷新一周，最大格子差 5.5 个百分点（下跌×>8% 的 −3% 触发概率 58.3% 对 63.8%），而那一格样本只有 566 个、正是当前持仓所在的格子。每天重算多花约 2 分钟，把最大误差从 5.5pp 压到 1.4pp。cron 时点：本机 JST 16:00 触发 + 实测约 30 分钟延迟 ≈ 北京 15:30，收盘后半小时。**原 intraday_collector 的 22 15 会在北京 14:52 触发，收盘前 8 分钟抓，会把残缺的末根 K 永久写进仓库且不报错**——已在代码层加 should_write() 兜底：北京时间不到 15:05 不写当天数据。容错：新浪给的是最近 128 个交易日的滚动窗口，日常取 240 根覆盖 30 个交易日，漏跑 29 天以内下次自动补齐；漏更多跑 --backfill 可补到 128 天；只有连续漏超过 128 个交易日才会永久丢数据。",
+      "rebuilt": "2026-08-03"
     }
   ],
   "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
-  "_status": "2026-08-03：loop 的运行由另一个 agent 负责——它读本文件的 tasks 列表，用 CronCreate 建立并把 job_id 回写。本会话只维护登记内容（cron/prompt/desc），**不改动别的任务的 job_id**。注意本文件是两个 agent 的共享状态，编辑前先 git status 确认没有未提交的外部改动。intraday_daily 是新增的合并任务，它替代的两条已在 replaces 字段留档，那两条对应的 job（见 replaces.job_id）需要由负责 loop 的 agent 取消。"
+  "_status": "2026-08-03 晚（负责 loop 的 agent 写）：按本文件重建完毕，现有 6 个 job 全部在跑，job_id 见各条目。本轮动作：① 新建 intraday_daily = 3a438f1d；② 按 replaces 取消 intraday_collector(6006f792) 与 intraday_baseline_rebuild(9e665dc8)；③ **再次移除 trade_selfcheck 条目**——用户 2026-08-03 明确指示「不再需要，直接停止并删除」，job 4fa480a5 已 CronDelete；上一次移除被另一个 agent 从旧副本覆盖回来了，若再次出现请以用户指示为准、不要重建；④ 另删了孤儿 job breadth_recorder(8fdbe5fc)，其脚本已在 09641d4 合并进 collector、文件已不存在，留着每天必然失败。全部到期日 2026-08-10。提醒：CronList 按会话隔离，起任务的只能有一个会话，否则重复触发。"
 }

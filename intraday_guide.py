@@ -296,6 +296,98 @@ def parse_holdings(items):
 STOP_LEVELS = (1, 2, 3, 5)
 
 
+# --- 表 F：剩余触及概率（盘中用，替代表 A 的全天概率）----------------------
+# 表 A 的「当日最低 < 今开−X%」是全天口径，假设这一天还没开始。盘中当日最低已经
+# 部分定型，用全天概率会严重高估——2026-08-03 实测中际旭创 14:00 那一刻，
+# 真实剩余概率 4.9%，表 A 给 64.2%，高估近 70 个百分点。
+
+NEED_BUCKETS = ((0.15, "<0.15"), (0.35, "0.15~0.35"), (0.6, "0.35~0.6"))
+
+
+def need_ratio(cur_low, target, day_open, pred_amp):
+    """还需再跌 = (此刻最低 − 目标价) ÷ 今开 ÷ 预测振幅。已触及返回 0。
+
+    用预测振幅归一化，是为了把「预测振幅格」这个维度压掉——否则
+    趋势 × 时点 × 振幅格 × 距离 四个维度会把 4826 个股票日切碎。
+    归一化后每格 1100~3000 个样本。
+    """
+    if not day_open or not pred_amp:
+        return None
+    if cur_low <= target:
+        return 0.0
+    return (cur_low - target) / day_open * 100 / pred_amp
+
+
+def need_bucket(ratio):
+    """还需再跌分四档，左闭右开。0 单独成「已触及」。"""
+    if ratio is None:
+        return None
+    if ratio <= 0:
+        return "已触及"
+    for edge, name in NEED_BUCKETS:
+        if ratio < edge:
+            return name
+    return ">0.6"
+
+
+def remaining_touch(trend, slot, cur_low, target, day_open, pred_amp, table_f):
+    """盘中的剩余触及概率。基准缺该格返回 None，不用全天概率顶替。"""
+    ratio = need_ratio(cur_low, target, day_open, pred_amp)
+    b = need_bucket(ratio)
+    if b is None:
+        return None
+    if b == "已触及":
+        return {"bucket": b, "p": 100.0, "n": None, "ratio": 0.0}
+    cell = ((table_f.get(trend) or {}).get(slot) or {}).get(b)
+    if not cell:
+        return None
+    return {"bucket": b, "p": cell["p"], "n": cell["n"], "ratio": ratio}
+
+
+def build_table_f(recs, slots=None, min_n=200):
+    """表 F：趋势 × 时点 × 还需再跌档 → 剩余触及概率。
+
+    recs 每条是一个股票-交易日：{trend, o, pred_amp, bars}。
+    对每个时点、每个目标档位（−1~−6%）算一条观察，问「最终有没有跌到」。
+    """
+    slots = slots or SLOTS[:-1]          # 最后一段没有「剩余」可言
+    acc = {}
+    for r in recs:
+        o, pred, bars = r["o"], r.get("pred_amp"), r["bars"]
+        if not o or not pred or len(bars) != 8:
+            continue
+        final_lo = min(b["l"] for b in bars)
+        for j, s in enumerate(slots):
+            cur_lo = min(b["l"] for b in bars[:j + 1])
+            for x in (1, 2, 3, 4, 5, 6):
+                tgt = o * (1 - x / 100)
+                b = need_bucket(need_ratio(cur_lo, tgt, o, pred))
+                if b in (None, "已触及"):
+                    continue
+                acc.setdefault((r["trend"], s, b), []).append(final_lo < tgt)
+    out = {}
+    for (tr, s, b), v in acc.items():
+        if len(v) < min_n:
+            continue
+        out.setdefault(tr, {}).setdefault(s, {})[b] = {
+            "n": len(v), "p": sum(v) / len(v) * 100}
+    return out
+
+
+def level_label(x, day_open, down=True):
+    """档位标签。**必须写明「距今开」并带上绝对价位。**
+
+    2026-08-03 用户指出的问题：表里 −1%/+3% 这些档位没说清相对什么算。
+    它们一律相对【今日开盘价】，而涨跌幅相对【昨收】——基准不同。
+    只写百分比会让人拿去和行情软件的涨跌幅对照，直接看错价位。
+    """
+    sign = "−" if down else "+"
+    if not day_open:
+        return f"距今开 {sign}{x}%"
+    price = day_open * (1 - x / 100) if down else day_open * (1 + x / 100)
+    return f"距今开 {sign}{x}%（{price:.2f} 元）"
+
+
 def stop_options(trend, cell_name, table_a, table_b, total, risk_pct):
     """给出各档止损的触发概率、触发后回到开盘上方的比例、无效止损概率、仓位上限。
 
@@ -830,7 +922,8 @@ def collect(code, m30=None):
         if d not in byday:
             continue
         bb = byday[d]
-        m30_recs.append({"code": code, "date": d, "trend": trend, "o": o, "bars": bb})
+        m30_recs.append({"code": code, "date": d, "trend": trend, "o": o,
+                         "pred_amp": pred, "bars": bb})
         legacy.append({"date": d, "code": code, "trend": trend, "gap": gap,
                        "gap_pct": (o - pc) / pc * 100,
                        "vol": classify_volume(v / av20 if av20 else 1),
@@ -866,6 +959,7 @@ def build():
         "table_b": build_table_b(day_all),
         "table_d": build_table_d(m30_all),
         "table_e": build_table_e(m30_all),
+        "table_f": build_table_f(m30_all),
     }
     data = {"built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "pool": POOL,
@@ -879,9 +973,10 @@ def build():
     with open(CACHE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     filled = sum(len(v) for v in tables["table_a"].values())
+    nf = sum(len(b) for v in tables["table_f"].values() for b in v.values())
     print(f"\n基准已保存：{CACHE}")
     print(f"  日线 {len(day_all)} 个股票日，表 A 填满 {filled} 格")
-    print(f"  30分钟 {len(m30_all)} 个股票日")
+    print(f"  30分钟 {len(m30_all)} 个股票日，表 F 填满 {nf} 格")
     return data
 
 
@@ -1042,6 +1137,8 @@ def snapshot(code, table_e, at_slot=None):
         if o:
             snap["open"] = o
             snap["last"] = last
+            snap["high"] = hi          # 表 F 要用盘中最低算「还需再跌」
+            snap["low"] = lo
             snap["gap_pct"] = (o - pc) / pc * 100
             snap["pos_vs_open"] = (last - o) / o * 100
             snap["walked_amp"] = day_amplitude(o, hi, lo)
@@ -1098,25 +1195,65 @@ def _print_stock(snap, data, total, risk_pct):
         print("  基准缺该格，不给建议（不用默认值顶替）")
     else:
         print("  无效止损 = 当天既触发止损被卖出、收盘价又回到开盘价之上（不卖本来是赚的）")
-        print(f"  {'止损':<6}{'触发概率':>10}{'触发后回到开盘上方':>20}{'无效止损概率':>14}{'仓位上限':>12}")
+        print("  止损位一律【相对今日开盘价】，不是涨跌幅（涨跌幅以昨收为基准）")
+        o_px = snap.get("open")
+        print(f"  {'止损位（距今开）':<20}{'触发概率':>10}{'触发后回开盘上方':>18}"
+              f"{'无效止损概率':>14}{'仓位上限':>12}")
         for o in opts:
             ba = f"{o['back_above']:.1f}%" if o["back_above"] is not None else "—"
             inf = f"{o['ineffective']:.1f}%" if o["ineffective"] is not None else "—"
-            print(f"  -{o['stop_pct']}%{'':<4}{o['trigger']:>8.1f}%{ba:>19}{inf:>13}{_fmt_wan(o['cap']):>12}")
+            lbl = (f"−{o['stop_pct']}%（{o_px * (1 - o['stop_pct'] / 100):.2f} 元）"
+                   if o_px else f"−{o['stop_pct']}%")
+            print(f"  {lbl:<22}{o['trigger']:>8.1f}%{ba:>17}{inf:>13}{_fmt_wan(o['cap']):>12}")
 
     print(f"\n[5] 挂单参考（同一张表：向下是买单成交率，向上是卖单成交率）")
     acell = (ta.get(trend) or {}).get(cell_name)
     if not acell:
         print("  基准缺该格")
     else:
-        down = "  ".join(f"-{k}% {v:.1f}%" for k, v in sorted(acell["down"].items(), key=lambda x: int(x[0])))
-        up = "  ".join(f"+{k}% {v:.1f}%" for k, v in sorted(acell["up"].items(), key=lambda x: int(x[0])))
-        print(f"  向下（买单成交 / 止损触发）：{down}")
-        print(f"  向上（卖单成交 / 止盈触及）：{up}")
+        o_px = snap.get("open")
+        def _fmt(items, down_side):
+            out = []
+            for k, v in sorted(items.items(), key=lambda x: int(x[0])):
+                x = int(k)
+                px = (o_px * (1 - x / 100) if down_side else o_px * (1 + x / 100)) if o_px else None
+                out.append(f"{'−' if down_side else '+'}{x}%"
+                           + (f"({px:.2f})" if px else "") + f" {v:.1f}%")
+            return "  ".join(out)
+        print(f"  档位一律【距今开】。今开 {o_px:.2f} 元，括号里是对应的绝对价位"
+              if o_px else "  档位一律【距今开】（拿不到今开，只给百分比）")
+        print(f"  向下（买单成交 / 止损触发）：{_fmt(acell['down'], True)}")
+        print(f"  向上（卖单成交 / 止盈触及）：{_fmt(acell['up'], False)}")
+        print(f"  ⚠ 以上是【全天】概率，前提是这一天还没开始。盘中已经走过的部分不算在内。")
         print(f"  该格样本 {acell['n']} 个股票日")
     note = special_cell_note(trend, cell_name)
     if note:
         print(f"  ⚠ {note}")
+
+    tf = data.get("table_f") or {}
+    o_px, cur_lo = snap.get("open"), snap.get("low")
+    print(f"\n[5B] 盘中真正该看的：剩余触及概率（表 F，条件化到此刻）")
+    if not slot or is_final_slot(slot) or o_px is None or cur_lo is None:
+        print("  当前不在可用时段（收盘段没有「剩余」可言），或拿不到盘中最低价")
+    elif not tf:
+        print("  基准里没有表 F，先跑 build 重建")
+    else:
+        print(f"  此刻最低 {cur_lo:.2f}（距今开 {(cur_lo - o_px) / o_px * 100:+.2f}%），"
+              f"预测振幅 {snap['pred_amp']:.2f}%")
+        print(f"  {'目标价位':<22}{'还需再跌':>10}{'档':>12}{'剩余触及概率':>14}{'全天概率(错)':>14}")
+        for x in (1, 2, 3, 5):
+            tgt = o_px * (1 - x / 100)
+            r = remaining_touch(trend, slot, cur_lo, tgt, o_px, snap["pred_amp"], tf)
+            full = (acell or {}).get("down", {}).get(str(x))
+            fs = f"{full:.1f}%" if full is not None else "—"
+            if not r:
+                print(f"  距今开 −{x}%（{tgt:.2f} 元）{'':<6}{'—':>10}{'基准缺该格':>12}"
+                      f"{'—':>14}{fs:>14}")
+                continue
+            need = (cur_lo - tgt) / o_px * 100
+            print(f"  距今开 −{x}%（{tgt:.2f} 元）{'':<6}{max(0, need):>9.2f}%{r['bucket']:>12}"
+                  f"{r['p']:>13.1f}%{fs:>14}")
+        print("  最后一列是表 A 的全天概率，列出来是为了看清差多少——**盘中不要用它**。")
 
 
 def _print_slot_structure(snaps, data, slot):

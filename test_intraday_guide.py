@@ -634,3 +634,84 @@ def test_build_reads_accumulated_store_not_api(tmp_path):
 def test_load_m30_store_missing_file_returns_empty():
     """仓库不存在时返回空字典，让 build 明确报「没有 30 分钟数据」，不静默去抓接口。"""
     assert ig.load_m30_store("/nonexistent/path/bars.jsonl") == {}
+
+
+def test_price_level_label_states_basis_and_absolute_price():
+    """档位标签必须写明「距今开」并给出绝对价位。
+
+    2026-08-03 用户指出：表格里 −1% / +3% 这些档位没说清是相对什么算的。
+    它们全部相对【今日开盘价】，而涨跌幅相对【昨收】——两个基准完全不同。
+    中际旭创 2026-08-03 今开 891.00：「−3%」指 864.27 这个价位，
+    而当天涨跌幅是 +0.05%（相对昨收 902.01）。同一天两个数毫不相干。
+
+    光写百分比会让人拿去和行情软件的涨跌幅对照，直接看错价位。
+    """
+    assert ig.level_label(3, 891.0, down=True) == "距今开 −3%（864.27 元）"
+    assert ig.level_label(3, 891.0, down=False) == "距今开 +3%（917.73 元）"
+    assert ig.level_label(5, 891.0, down=True) == "距今开 −5%（846.45 元）"
+    # 拿不到开盘价时只给档位，不编价格
+    assert ig.level_label(3, None, down=True) == "距今开 −3%"
+
+
+# ---- 表 F：剩余触及概率（2026-08-03 新增，修正盘中用全天概率这个错误）------
+
+
+def test_need_ratio():
+    """还需再跌 = (此刻最低 − 目标价) ÷ 今开 ÷ 预测振幅。
+
+    用预测振幅归一化，是为了把「预测振幅格」这个维度压掉——
+    否则 趋势×时点×振幅格×距离 四个维度会把 4826 个股票日切碎。
+    归一化后每格 1100~3000 个样本。
+    """
+    # 今开 100，此刻最低 98，目标 97 → 还需再跌 1%；预测振幅 5% → 比值 0.2
+    assert round(ig.need_ratio(cur_low=98.0, target=97.0, day_open=100.0, pred_amp=5.0), 3) == 0.2
+    # 已经触及，返回 0
+    assert ig.need_ratio(cur_low=96.0, target=97.0, day_open=100.0, pred_amp=5.0) == 0.0
+    assert ig.need_ratio(cur_low=97.0, target=97.0, day_open=100.0, pred_amp=5.0) == 0.0
+    # 缺参数返回 None，不猜
+    assert ig.need_ratio(98.0, 97.0, 100.0, None) is None
+    assert ig.need_ratio(98.0, 97.0, 0.0, 5.0) is None
+
+
+def test_need_bucket_boundaries():
+    """还需再跌分四档，左闭右开。"""
+    assert ig.need_bucket(0.0) == "已触及"
+    assert ig.need_bucket(0.05) == "<0.15"
+    assert ig.need_bucket(0.15) == "0.15~0.35"
+    assert ig.need_bucket(0.35) == "0.35~0.6"
+    assert ig.need_bucket(0.6) == ">0.6"
+    assert ig.need_bucket(2.0) == ">0.6"
+    assert ig.need_bucket(None) is None
+
+
+def test_remaining_touch_prob_replaces_full_day_prob_intraday():
+    """盘中必须用剩余触及概率，不能用表 A 的全天概率。
+
+    2026-08-03 用户质疑「14 点的建议有帮助么」时查出来的错误：
+    表 A 的「当日最低 < 今开−3%」是**全天**口径，假设这一天还没开始。
+    而 14:00 时当日最低已经基本定型，剩下只有最后一小时。
+
+    实测（下跌 × >8% 格）按 14:00 时最低已到哪里分组，全天最终跌破 −3% 的比例：
+      还没跌破 −1%       0.0%
+      跌破 −1% 未破 −2%  4.9%
+      跌破 −2% 未破 −3%  31.1%
+      已经跌破 −3%       100%
+    而表 A 对这四种情况给同一个数 73.2%。中际旭创 2026-08-03 14:00 时
+    最低距开 −1.70%，真实剩余概率 4.9%，工具给 64.2%，**高估近 70 个百分点**。
+    """
+    tf = {"下跌": {"14:00": {"<0.15": {"n": 1150, "p": 18.3},
+                             "0.15~0.35": {"n": 1447, "p": 4.1},
+                             "0.35~0.6": {"n": 1420, "p": 0.4},
+                             ">0.6": {"n": 2529, "p": 0.0}}}}
+    # 今开 891，此刻最低 875.87，目标 −3%（864.27），预测振幅 8.51
+    r = ig.remaining_touch("下跌", "14:00", cur_low=875.87, target=864.27,
+                           day_open=891.0, pred_amp=8.51, table_f=tf)
+    assert r["bucket"] == "0.15~0.35"          # 还需再跌 1.30/8.51 = 0.153
+    assert r["p"] == 4.1
+    assert r["n"] == 1447
+    # 已经触及的目标，概率 100%
+    r2 = ig.remaining_touch("下跌", "14:00", cur_low=860.0, target=864.27,
+                            day_open=891.0, pred_amp=8.51, table_f=tf)
+    assert r2["bucket"] == "已触及" and r2["p"] == 100.0
+    # 基准缺该格，返回 None 不猜
+    assert ig.remaining_touch("下跌", "09:00", 875.87, 864.27, 891.0, 8.51, tf) is None
