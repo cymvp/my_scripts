@@ -10,77 +10,94 @@
       "name": "market_advisor_morning",
       "cron": "42 9 * * 1-5",
       "prompt": "/ycui_market_advisor 早盘模式：A 股开盘方向预测 + 受益板块竞价验证，并按 skill 中的早盘流程发送 Slack。",
-      "job_id": "af6ad918",
+      "job_id": null,
       "created": "2026-07-27",
-      "desc": "交易日 9:12 BJT(=10:12 JST) market advisor 早盘模式：开盘方向预测并发 Slack（脚本设计窗口 9:10-9:25 BJT）。替代原 morning_forecast"
+      "desc": "交易日 9:12 BJT(=10:12 JST) market advisor 早盘模式：开盘方向预测并发 Slack（脚本设计窗口 9:10-9:25 BJT）。替代原 morning_forecast",
+      "prev_job_id": "af6ad918",
+      "active": false
     },
     {
       "name": "market_advisor_close",
       "cron": "15 15 * * 1-5",
       "prompt": "/ycui_market_advisor 尾盘模式：给出持有/减仓/清仓建议。运行完成后，把完整报告（市场快照 + 全球热点摘要 + 今晚事件清单 + 逐票建议 + 一句话总结，控制在 2900 字符内）发送到 Slack：webhook 读取顺序为环境变量 SLACK_WEBHOOK_URL → 本地文件 ~/.slack_webhook_url（webhook 是密钥，绝不写入 my_scripts 公开仓库的任何文件）。用 mrkdwn section block POST。webhook 缺失或发送失败时在对话中明确说明，不要静默。微信通道已失效不要尝试。",
-      "job_id": "d09a4f63",
+      "job_id": null,
       "created": "2026-07-27",
-      "desc": "交易日 14:45 BJT(=15:45 JST) market advisor 尾盘模式：收盘前卖出顾问并发 Slack。替代原 close_advisor"
+      "desc": "交易日 14:45 BJT(=15:45 JST) market advisor 尾盘模式：收盘前卖出顾问并发 Slack。替代原 close_advisor",
+      "prev_job_id": "d09a4f63",
+      "active": false
     },
     {
       "name": "ycui_sync",
       "cron": "0 21 * * *",
       "prompt": "/ycui_sync",
-      "job_id": "a7e8986f",
+      "job_id": null,
       "created": "2026-07-27",
-      "desc": "每天 21:00 同步 Claude 数据 + my_data + my_scripts"
+      "desc": "每天 21:00 同步 Claude 数据 + my_data + my_scripts",
+      "prev_job_id": "a7e8986f",
+      "active": false
     },
     {
       "name": "daily_memory",
       "cron": "0 23 * * *",
       "prompt": "/ycui-daily-memory",
-      "job_id": "4edb0cc0",
+      "job_id": null,
       "created": "2026-07-27",
-      "desc": "每天 23:00 生成当日工作记忆"
+      "desc": "每天 23:00 生成当日工作记忆",
+      "prev_job_id": "4edb0cc0",
+      "active": false
     },
     {
       "name": "loop_checker",
       "cron": "37 9 */3 * *",
       "prompt": "这是 loop 任务自愈检查。读取 ~/projects/my_scripts/loop_tasks.json，用 CronList 对比其中 tasks 列表：凡是 json 里登记但 CronList 中已不存在的任务（7天过期或其它原因失效），用 CronCreate 按登记的 cron 和 prompt 原样重建（包括本检查任务自身若临近过期也重建），然后把新的 job id 和重建时间更新回 loop_tasks.json，并简要汇报重建了哪些。全部健在则只回一句\"loop 任务全部健在\"。",
-      "job_id": "f3fec55e",
+      "job_id": null,
       "created": "2026-07-27",
       "rebuilt": "2026-08-01",
-      "prev_job_id": "f7deb560",
-      "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务。2026-08-01 提前重建：原 f7deb560 建于 7/27、8/3 到期，而按 cron 下次自检要到 8/4，会错过自己的续期窗口"
+      "prev_job_id": "f3fec55e",
+      "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务。2026-08-01 提前重建：原 f7deb560 建于 7/27、8/3 到期，而按 cron 下次自检要到 8/4，会错过自己的续期窗口",
+      "active": false
     },
     {
       "name": "trade_selfcheck",
       "cron": "30 16 * * 1-5",
       "prompt": "跑 python3 ~/projects/my_scripts/trade_selfcheck.py，把当天做T自检结果读一遍。若发现 ⚠ 异常项，分析根因并给我改进建议（档距/中枢阈值/触发方式/风控），重要的推 Slack；一切正常则简短说\"做T自检通过\"。这是自我观测，不要等我来发现问题。",
-      "job_id": "0b13277c",
+      "job_id": null,
       "created": "2026-07-27",
-      "desc": "交易日收盘后(16:30 JST≈15:30 BJT)自动扫 trade_assist.log 做自检，异常主动报告"
+      "desc": "交易日收盘后(16:30 JST≈15:30 BJT)自动扫 trade_assist.log 做自检，异常主动报告",
+      "prev_job_id": "0b13277c",
+      "active": false
     },
     {
       "name": "breadth_recorder",
       "cron": "18 15 * * 1-5",
       "prompt": "这是板块宽度日记录任务。跑 `cd ~/projects/my_scripts && /usr/local/bin/python3.10 breadth_recorder.py`，把 38 只 A 股科技股当日的普涨/普跌强度记录到 breadth_log.csv。如果输出显示当天是事件日（普涨-强 / 普涨-弱 / 普跌-强 / 普跌-弱），简要汇报板块中位开盘跳空、当日涨跌幅、开盘→收盘、收高概率这四个数，并说明这是第几次积累到该类事件；非事件日只回一句\"板块宽度已记录，非事件日\"。注意：这个记录器解决的是独立事件数不足的问题（普涨日一年只有 6 天、普跌日 15 天），目的是让样本自己长起来，不是当天给交易建议。不要基于单日记录给任何买卖判断。",
-      "job_id": "be719afa",
+      "job_id": null,
       "created": "2026-08-02",
-      "desc": "交易日 15:18 记录板块普涨/普跌强度，积累独立事件样本"
+      "desc": "交易日 15:18 记录板块普涨/普跌强度，积累独立事件样本",
+      "prev_job_id": "be719afa",
+      "active": false
     },
     {
       "name": "intraday_collector",
       "cron": "22 15 * * 1-5",
       "prompt": "这是日内分钟数据积累任务。跑 `cd ~/projects/my_scripts && /usr/local/bin/python3.10 intraday_collector.py`，把 38 只 A 股科技股当日的 30 分钟 K 线追加到 intraday_bars.jsonl。汇报格式：只回一句\"日内数据已积累，新增 N 条，累计 X 个交易日\"。如果取数失败的股票超过 5 只，额外说明失败原因。背景：分钟级数据的历史深度被接口卡死（新浪 30 分钟线上限 128 个交易日、东方财富只保留 31 天），而按趋势状态拆分后样本严重不足。这个任务是为了长期积累突破限制，攒到 500 个交易日大约需要两年。不要基于当天数据给任何交易判断。",
-      "job_id": "c1431bfb",
+      "job_id": null,
       "created": "2026-08-02",
-      "desc": "交易日 15:22 抓取38只票的30分钟K线，长期积累突破接口历史深度限制"
+      "desc": "交易日 15:22 抓取38只票的30分钟K线，长期积累突破接口历史深度限制",
+      "prev_job_id": "c1431bfb",
+      "active": false
     },
     {
       "name": "intraday_baseline_rebuild",
       "cron": "47 20 * * 6",
       "prompt": "盘中指导工具的每周基准重算。执行 cd ~/projects/my_scripts && python3 intraday_guide.py build，然后报告：日线和 30 分钟各多少个股票日、表 A 填满几格、区间起止日期。若某只票取数失败，列出票名和原因；若表 A 填满少于 15 格，说明哪几格样本不足。重算完抽查一格与 ~/projects/my_data/trading/查表手册.md 表 A 对照（下跌 × 6~8% × −3% 文档值 37.6%），偏差超过 1 个百分点要报告。不要做其他分析，不要给方向判断。",
-      "job_id": "da0caaeb",
+      "job_id": null,
       "created": "2026-08-03",
       "desc": "每周六 20:47 JST(≈19:47 BJT) 重算 intraday_guide 的五张基准表。样本每周增加，分格边界会漂移，不能沿用写死的数字。耗时约 2 分钟（38 只票 × 双接口）。基准文件在 .gitignore 里不进仓库。",
-      "prev_job_id": "15a5f4c5"
+      "prev_job_id": "da0caaeb",
+      "active": false
     }
   ],
-  "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。"
+  "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
+  "_status": "2026-08-03：本会话已停止并清空所有 cron job，job_id 全部置空。loop 的运行由另一个 agent 负责——它读本文件的 tasks 列表，用 CronCreate 按 cron 和 prompt 逐条建立，再把新 job_id 写回对应条目。本会话只维护登记内容，不再自己起任务。"
 }

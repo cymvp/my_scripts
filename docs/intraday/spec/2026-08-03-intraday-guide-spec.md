@@ -18,7 +18,7 @@
 BH 校正后无一通过；15 个日内策略在测试期全部失败，训练期最好的 +71.1% 在测试期变成 −21.8%。
 skill 里出现方向预测，等于把已经被数据否掉的东西重新放进来。
 
-**数据来源**：`~/projects/my_data/trading/查表手册.md` 的表 A~E 与常数组。
+**数据来源**：`~/projects/my_data/trading/查表手册.md` 的表 A / B / D / E。
 skill 不自己推导统计结论，只查预先算好的基准文件。
 
 ---
@@ -61,7 +61,7 @@ Snapshot     = {code, name, trend, open, last, high, low,
                 pos_vs_open,                 # 当前价相对今开
                 implied_full_amp,            # 由已走振幅反推的全天振幅
                 remain_room}                 # 剩余空间
-Baseline     = {table_a, table_b, table_c, table_d, table_e, const_open_pos}
+Baseline     = {table_a, table_b, table_d, table_e}   # 只有四张，见下方说明
 Allocation   = {code, weight, amount}        # 风险平价分配结果
 CheckResult  = {id, title, status, detail}   # status ∈ pass / fail / ask / info
 ```
@@ -74,10 +74,16 @@ CheckResult  = {id, title, status, detail}   # status ∈ pass / fail / ask / in
   "daily_range": ["2023-06-30", "2026-07-31"],
   "m30_range": ["2026-01-07", "2026-07-31"],
   "table_a": {"下跌": {"6~8%": {"n": 935, "down": {"1": 76.4, ...}, "up": {...}}}},
-  "table_b": {...}, "table_c": {...}, "table_d": {...}, "table_e": {...},
-  "const_open_pos": {"下跌": {"p25": 18.5, "p50": 44.7, "p75": 76.2}}
+  "table_b": {...}, "table_d": {...}, "table_e": {...}
 }
 ```
+
+**只有四张表。** 原表 C（限价买单收益差）2026-08-03 降级——它的成交率列就是表 A 的
+向下触及概率（同一个数在三处重复），独有的收益差列收敛成一条规则（多数情况别挂限价），
+盘中不需要查；而且 `build` 从来没有生成过它。
+「常数组·开盘价在区间的位置」同理，是三个固定数字，不是查表，写在文档里就够。
+
+**表名 A / B / D / E 是标识不是序号，D 和 E 不改名，避免打断既有引用。**
 
 ---
 
