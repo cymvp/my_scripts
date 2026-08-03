@@ -330,12 +330,17 @@ skill (`~/.claude/skills/ycui_intraday/SKILL.md`) 负责问用户要持仓，然
 
 **未完成**：
 
-1. **每周重算的定时任务**。macOS 拦了 `crontab` 写入（需要终端的完全磁盘访问权限），
-   要用户自己执行：
-   ```
-   (crontab -l 2>/dev/null; echo '47 19 * * 6 cd $HOME/projects/my_scripts && /usr/bin/python3 intraday_guide.py build > build.log 2>&1') | crontab -
-   ```
-   本机时区是 JST，19:47 本机 = 北京 18:47，周六。
+1. ~~每周重算的定时任务~~ **已完成**：走 loop 机制，不用系统 crontab。
+   登记在 `~/projects/my_scripts/loop_tasks.json` 的 `intraday_baseline_rebuild`，
+   cron `47 20 * * 6`（周六 20:47 JST ≈ 19:47 BJT）。
+
+   **为什么不用系统 crontab**：macOS 拦了 `crontab` 写入（需要终端的完全磁盘访问权限）；
+   而且 loop 机制本来就更合适——它跑的是一个 prompt 而不是裸命令，
+   可以在重算后顺带抽查一格与查表手册对照、发现偏差主动报告。
+
+   **7 天过期怎么办**：harness 的 cron 是会话级、7 天自动过期，
+   由 `loop_checker`（每 3 天跑一次）按 `loop_tasks.json` 重建。
+   会话重启后全部丢失，对 Claude 说「按 loop_tasks.json 重建全部定时任务」即可。
 2. **长鑫科技 688825 纳入样本池**：上市不足 61 个交易日，最早 2026 年 10 月底。
 3. **表 D / E 的样本积累**：`intraday_collector.py` 每交易日跑，攒到 300 个以上交易日
    （约一年后）重跑日内分析。
