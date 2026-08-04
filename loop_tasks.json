@@ -10,54 +10,54 @@
       "name": "market_advisor_morning",
       "cron": "15 9 * * 1-5",
       "prompt": "/ycui_market_advisor 早盘模式：A 股开盘方向预测，并按 skill 中的早盘流程发送 Slack。注意：本任务的目标执行时刻是 8:45 BJT，此时集合竞价（9:15-9:25 BJT）尚未开始，新浪返回的现价为 0、买一档为空——**不要读竞价数据、不要把昨收当竞价价**，方向判断只用外盘信号（NQ 夜盘、KOSPI 早盘、SK海力士/三星/台积电）。若需要竞价验证，在 9:20 BJT 之后另行调用。",
-      "job_id": "5bd941b6",
+      "job_id": "3133dc67",
       "created": "2026-07-27",
       "desc": "交易日 8:45 BJT(=9:45 JST，cron 9:15 JST 已补偿 +30min 执行延迟) market advisor 早盘模式。2026-08-03 从 9:12 BJT 提前到 8:45 BJT（用户要求）。代价：8:45 BJT 集合竞价未开始，无法做竞价验证，方向判断只剩外盘信号；morning_open_forecast.py 的设计窗口 9:10-9:25 BJT 也在此之后，但 KOSPI 已开盘 45 分钟（8:00 BJT 开）、NQ 期货实时，方向输出仍可用。",
-      "prev_job_id": "af6ad918",
+      "prev_job_id": "5bd941b6",
       "active": true,
-      "rebuilt": "2026-08-03"
+      "rebuilt": "2026-08-04"
     },
     {
       "name": "market_advisor_close",
       "cron": "15 15 * * 1-5",
       "prompt": "/ycui_market_advisor 尾盘模式：给出持有/减仓/清仓建议。运行完成后，把完整报告（市场快照 + 全球热点摘要 + 今晚事件清单 + 逐票建议 + 一句话总结，控制在 2900 字符内）发送到 Slack：webhook 读取顺序为环境变量 SLACK_WEBHOOK_URL → 本地文件 ~/.slack_webhook_url（webhook 是密钥，绝不写入 my_scripts 公开仓库的任何文件）。用 mrkdwn section block POST。webhook 缺失或发送失败时在对话中明确说明，不要静默。微信通道已失效不要尝试。",
-      "job_id": "7e74503f",
+      "job_id": "7f444fe4",
       "created": "2026-07-27",
       "desc": "交易日 14:45 BJT(=15:45 JST) market advisor 尾盘模式：收盘前卖出顾问并发 Slack。替代原 close_advisor",
-      "prev_job_id": "d09a4f63",
+      "prev_job_id": "7e74503f",
       "active": true,
-      "rebuilt": "2026-08-03"
+      "rebuilt": "2026-08-04"
     },
     {
       "name": "ycui_sync",
       "cron": "0 21 * * *",
       "prompt": "/ycui_sync",
-      "job_id": "b5392fc9",
+      "job_id": "28676baf",
       "created": "2026-07-27",
       "desc": "每天 21:00 同步 Claude 数据 + my_data + my_scripts",
-      "prev_job_id": "a7e8986f",
+      "prev_job_id": "b5392fc9",
       "active": true,
-      "rebuilt": "2026-08-03"
+      "rebuilt": "2026-08-04"
     },
     {
       "name": "daily_memory",
       "cron": "0 23 * * *",
       "prompt": "/ycui-daily-memory",
-      "job_id": "6b400189",
+      "job_id": "67d67305",
       "created": "2026-07-27",
       "desc": "每天 23:00 生成当日工作记忆",
-      "prev_job_id": "4edb0cc0",
+      "prev_job_id": "6b400189",
       "active": true,
-      "rebuilt": "2026-08-03"
+      "rebuilt": "2026-08-04"
     },
     {
       "name": "loop_checker",
       "cron": "37 9 */3 * *",
       "prompt": "这是 loop 任务自愈检查。读取 ~/projects/my_scripts/loop_tasks.json，用 CronList 对比其中 tasks 列表：凡是 json 里登记但 CronList 中已不存在的任务（7天过期或其它原因失效），用 CronCreate 按登记的 cron 和 prompt 原样重建（包括本检查任务自身若临近过期也重建），然后把新的 job id 和重建时间更新回 loop_tasks.json，并简要汇报重建了哪些。全部健在则只回一句\"loop 任务全部健在\"。",
-      "job_id": "802ac333",
+      "job_id": "4394b292",
       "created": "2026-07-27",
-      "rebuilt": "2026-08-03",
-      "prev_job_id": "f3fec55e",
+      "rebuilt": "2026-08-04",
+      "prev_job_id": "802ac333",
       "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务。2026-08-01 提前重建：原 f7deb560 建于 7/27、8/3 到期，而按 cron 下次自检要到 8/4，会错过自己的续期窗口",
       "active": true
     },
@@ -65,7 +65,7 @@
       "name": "intraday_daily",
       "cron": "0 16 * * 1-5",
       "prompt": "交易日收盘后的日内数据流水线，两步串联：第一步 cd ~/projects/my_scripts && python3 intraday_collector.py（抓当天 30 分钟 K 线并追加）；第二步 python3 intraday_guide.py build（读仓库 + 抓日线，重算表 A/B/D/E）。报告：新增多少条、38 只全齐的交易日累计多少天、日线和 30 分钟各多少股票日、表 A 填满几格。若第一步输出「跳过未收盘的日期」，说明触发太早，报告并提醒调整 cron。若某只票取数失败，列出票名和原因。重算完抽查「下跌 × 6~8% × −3%」这一格与 ~/projects/my_data/trading/查表手册.md 的 37.6% 对照，偏差超过 1 个百分点要报告。不要做其他分析，不要给方向判断。",
-      "job_id": "3a438f1d",
+      "job_id": "f64504f1",
       "active": true,
       "created": "2026-08-03",
       "replaces": [
@@ -85,9 +85,10 @@
         }
       ],
       "desc": "合并原 intraday_collector（每交易日）和 intraday_baseline_rebuild（每周六）。合并理由：第二步的输入就是第一步的输出，分开跑还错开一周不合逻辑——实测表格晚刷新一周，最大格子差 5.5 个百分点（下跌×>8% 的 −3% 触发概率 58.3% 对 63.8%），而那一格样本只有 566 个、正是当前持仓所在的格子。每天重算多花约 2 分钟，把最大误差从 5.5pp 压到 1.4pp。cron 时点：本机 JST 16:00 触发 + 实测约 30 分钟延迟 ≈ 北京 15:30，收盘后半小时。**原 intraday_collector 的 22 15 会在北京 14:52 触发，收盘前 8 分钟抓，会把残缺的末根 K 永久写进仓库且不报错**——已在代码层加 should_write() 兜底：北京时间不到 15:05 不写当天数据。容错：新浪给的是最近 128 个交易日的滚动窗口，日常取 240 根覆盖 30 个交易日，漏跑 29 天以内下次自动补齐；漏更多跑 --backfill 可补到 128 天；只有连续漏超过 128 个交易日才会永久丢数据。",
-      "rebuilt": "2026-08-03"
+      "rebuilt": "2026-08-04",
+      "prev_job_id": "3a438f1d"
     }
   ],
   "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
-  "_status": "2026-08-03 晚（负责 loop 的 agent 写）：按本文件重建完毕，现有 6 个 job 全部在跑，job_id 见各条目。本轮动作：① 新建 intraday_daily = 3a438f1d；② 按 replaces 取消 intraday_collector(6006f792) 与 intraday_baseline_rebuild(9e665dc8)；③ **再次移除 trade_selfcheck 条目**——用户 2026-08-03 明确指示「不再需要，直接停止并删除」，job 4fa480a5 已 CronDelete；上一次移除被另一个 agent 从旧副本覆盖回来了，若再次出现请以用户指示为准、不要重建；④ 另删了孤儿 job breadth_recorder(8fdbe5fc)，其脚本已在 09641d4 合并进 collector、文件已不存在，留着每天必然失败。全部到期日 2026-08-10。提醒：CronList 按会话隔离，起任务的只能有一个会话，否则重复触发。"
+  "_status": "2026-08-04 晚（负责 loop 的 agent 写）：按本文件配置整体重建，6 个 job 全部在跑。做法是先 CronDelete 旧的 6 个再 CronCreate，避免同一功能一天触发两次；旧 id 见各条目 prev_job_id。**到期日由 2026-08-10 顺延至 2026-08-11。**已知未解决的问题：loop_checker 的 cron 是 */3（每月 1/4/7/10 日），而全部任务 7 天到期，每个生命周期只触发 2~3 次、最后一次总在到期前 3 天内，靠「缺失才重建」这个判据赶不上——8/10 那天所有任务（含自检本身）触发最后一次后删除，若自检只对比 CronList 有无缺失，会看到一切正常然后集体消失。建议把判据改成「缺失的补 + 创建或重建日期距今满 4 天的主动续期」，已向用户提过，等确认后再改 prompt。提醒：CronList 按会话隔离，起任务的只能有一个会话。"
 }
