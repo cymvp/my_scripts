@@ -264,8 +264,17 @@ def test_calibration_flag_when_far_from_prediction():
 # ---- 基准表生成（纯计算，不联网）----------------------------------------
 
 
-def _rec(trend, cell, o, h, l, c):
-    return {"trend": trend, "amp_cell": cell, "o": o, "h": h, "l": l, "c": c}
+_REC_SEQ = [0]
+
+
+def _rec(trend, cell, o, h, l, c, date=None):
+    """date 默认每次递增一天——表 A 的聚类稳健区间按日期分组，日期是必需字段。
+    默认给不同日期，等价于「天内无相关」，区间退化成普通二项区间。"""
+    if date is None:
+        _REC_SEQ[0] += 1
+        date = f"2026-{_REC_SEQ[0] // 28 + 1:02d}-{_REC_SEQ[0] % 28 + 1:02d}"
+    return {"date": date, "trend": trend, "amp_cell": cell,
+            "o": o, "h": h, "l": l, "c": c}
 
 
 def test_build_table_a_counts_touches_both_directions():
@@ -715,3 +724,189 @@ def test_remaining_touch_prob_replaces_full_day_prob_intraday():
     assert r2["bucket"] == "已触及" and r2["p"] == 100.0
     # 基准缺该格，返回 None 不猜
     assert ig.remaining_touch("下跌", "09:00", 875.87, 864.27, 891.0, 8.51, tf) is None
+
+
+def test_need_ratio_up_and_remaining_touch_up():
+    """表 F 的向上版本：还需再涨多少才够得着，以及剩余触及概率。
+
+    2026-08-04 11:18 用户指出的缺口：中际旭创现价 990.71、最高 996.00、
+    距今开 +5.39%，贴着当日高点，而 [5B] 全是向下档位，向上一个都没有。
+    卖单成交率、止盈能不能够到，盘中同样需要条件化，不能用表 A 的全天值。
+    """
+    # 今开 100，此刻最高 105，目标 107 → 还需再涨 2%；预测振幅 8% → 比值 0.25
+    assert round(ig.need_ratio_up(cur_high=105.0, target=107.0, day_open=100.0, pred_amp=8.0), 3) == 0.25
+    # 已经触及
+    assert ig.need_ratio_up(cur_high=108.0, target=107.0, day_open=100.0, pred_amp=8.0) == 0.0
+    assert ig.need_ratio_up(107.0, 107.0, 100.0, 8.0) == 0.0
+    assert ig.need_ratio_up(105.0, 107.0, 0.0, 8.0) is None
+
+    tf_up = {"下跌": {"11:30": {"<0.15": {"n": 900, "p": 40.0},
+                                "0.15~0.35": {"n": 1100, "p": 18.0},
+                                "0.35~0.6": {"n": 1000, "p": 5.0},
+                                ">0.6": {"n": 2000, "p": 0.5}}}}
+    r = ig.remaining_touch_up("下跌", "11:30", cur_high=996.0, target=996.4,
+                              day_open=940.0, pred_amp=7.88, table_f_up=tf_up)
+    assert r["bucket"] == "<0.15" and r["p"] == 40.0
+    r2 = ig.remaining_touch_up("下跌", "11:30", cur_high=996.0, target=990.0,
+                               day_open=940.0, pred_amp=7.88, table_f_up=tf_up)
+    assert r2["bucket"] == "已触及" and r2["p"] == 100.0
+    assert ig.remaining_touch_up("下跌", "09:00", 996.0, 996.4, 940.0, 7.88, tf_up) is None
+
+
+# ---- 向上档位扩到 +10%/+12%（2026-08-04）------------------------------------
+
+
+def test_up_touch_levels_extended():
+    """向上档位必须覆盖到 +12%。
+
+    2026-08-04 11:19 暴露的缺口：国际复材当天已从今开涨 8.00%，
+    而表 A 向上最高只到 +7%，五档全部「已触及」，给不出任何参考。
+    向下保持 (1,2,3,5) 不动——止损位放到 −10% 没有实际意义。
+    """
+    assert ig.UP_TOUCH_LEVELS == (1, 2, 3, 5, 7, 10, 12)
+    assert ig.TOUCH_LEVELS == (1, 2, 3, 5)      # 向下不变
+
+
+def test_build_table_a_up_covers_extended_levels():
+    """表 A 的 up 字典要含 10 和 12 两个新档，down 保持四档。"""
+    # 每条给不同日期：表 A 的聚类稳健区间要按日期分组，日期是必需字段
+    recs = [{"date": f"2026-{i // 28 + 1:02d}-{i % 28 + 1:02d}",
+             "trend": "下跌", "amp_cell": ">8%", "o": 100.0, "h": 100.0 + i * 0.4,
+             "l": 100.0 - i * 0.3, "c": 100.0}
+            for i in range(200)]
+    a = ig.build_table_a(recs, min_n=150)["下跌"][">8%"]
+    assert sorted(a["up"], key=int) == ["1", "2", "3", "5", "7", "10", "12"]
+    assert sorted(a["down"], key=int) == ["1", "2", "3", "5"]
+    # i*0.4 > 12 需要 i>30，200 条里 169 条满足 → 84.5%
+    assert abs(a["up"]["12"] - 84.5) < 0.6
+
+
+# ---- 收盘位置（2026-08-04 新增描述性字段）------------------------------------
+
+
+def test_close_position():
+    """收盘位置 =（今收 − 当日最低）÷（当日最高 − 当日最低），0~1。
+
+    1 = 收在当日最高，0 = 收在当日最低，0.5 = 正中间。
+    算例（2026-08-03 中际旭创，30 分钟 K 线核实）：
+      今开 891.00 收 902.50 最高 933.61 最低 875.87
+      收盘位置 =(902.50 − 875.87) ÷ (933.61 − 875.87) = 26.63 ÷ 57.74 = 0.461
+    """
+    assert round(ig.close_position(902.50, 933.61, 875.87), 3) == 0.461
+    assert ig.close_position(110.0, 110.0, 100.0) == 1.0     # 收在最高
+    assert ig.close_position(100.0, 110.0, 100.0) == 0.0     # 收在最低
+    assert ig.close_position(105.0, 110.0, 100.0) == 0.5
+    # 一字板（最高=最低）无定义，返回 None 而不是 0 或 0.5
+    assert ig.close_position(100.0, 100.0, 100.0) is None
+
+
+def test_build_close_position_by_trend():
+    """按趋势汇总收盘位置。
+
+    实测（739 天）：下跌 0.430、震荡 0.470、上涨 0.513，单调递增。
+    这是当日结束才知道的量，只能做事后复盘和预期设定，不能进挂单决策。
+    """
+    recs = ([{"trend": "下跌", "amp_cell": ">8%", "o": 100.0, "h": 110.0, "l": 100.0, "c": 102.0}] * 200
+            + [{"trend": "上涨", "amp_cell": ">8%", "o": 100.0, "h": 110.0, "l": 100.0, "c": 108.0}] * 200)
+    out = ig.build_close_position(recs, min_n=150)
+    assert abs(out["下跌"]["mean"] - 0.20) < 1e-6
+    assert abs(out["上涨"]["mean"] - 0.80) < 1e-6
+    assert out["下跌"]["n"] == 200
+    # 样本不足的趋势不出格
+    assert ig.build_close_position(recs[:10], min_n=150) == {}
+
+
+# ---- 板块共振维度（2026-08-04）---------------------------------------------
+
+
+def test_resonance_count_and_bucket():
+    """板块共振 = 当天有几只票落在同一个（趋势 × 预测振幅格）。
+
+    2026-08-04 检验出来的真实条件变量。「下跌 × >8%」格里，触及 −3% 的概率：
+      当天 1~3 只（孤立）  45.9%  聚类稳健区间 [34.4%, 57.4%]
+      当天 4~7 只          36.8%  [23.3%, 50.8%]
+      当天 8 只以上（共振） 77.8%  [66.4%, 87.5%]
+    最低组上限 57.4% 低于最高组下限 66.4%，两区间不重叠，差异成立。
+    """
+    recs = ([{"code": f"A{i}", "date": "2026-08-04", "trend": "下跌", "amp_cell": ">8%"}
+             for i in range(9)]
+            + [{"code": "B1", "date": "2026-08-04", "trend": "上涨", "amp_cell": "4~6%"}]
+            + [{"code": "C1", "date": "2026-08-03", "trend": "下跌", "amp_cell": ">8%"}])
+    ig.attach_resonance(recs)
+    assert recs[0]["reso_n"] == 9 and recs[0]["reso"] == "8只以上"
+    assert recs[9]["reso_n"] == 1 and recs[9]["reso"] == "1~3只"
+    assert recs[10]["reso_n"] == 1 and recs[10]["reso"] == "1~3只"
+    assert ig.resonance_bucket(3) == "1~3只"
+    assert ig.resonance_bucket(4) == "4~7只"
+    assert ig.resonance_bucket(7) == "4~7只"
+    assert ig.resonance_bucket(8) == "8只以上"
+
+
+def test_build_table_a_reso():
+    """表 A 的共振分档表：趋势 × 振幅格 × 共振档 → 触及概率。"""
+    recs = []
+    for d in range(60):                      # 60 个日期，每天 8 只票（共振档）
+        for i in range(8):
+            recs.append({"code": f"A{i}", "date": f"2026-0{d//30+1}-{d%30+1:02d}",
+                         "trend": "下跌", "amp_cell": ">8%", "o": 100.0,
+                         "h": 105.0, "l": 96.0 if i < 6 else 98.0, "c": 100.0})
+    ig.attach_resonance(recs)
+    out = ig.build_table_a_reso(recs, min_n=100)
+    cell = out["下跌"][">8%"]["8只以上"]
+    assert cell["n"] == 480
+    assert abs(cell["down"]["3"] - 75.0) < 0.1     # 8 只里 6 只跌破 −3%
+    assert cell["dates"] == 60
+
+
+# ---- 聚类稳健置信区间（2026-08-04）-----------------------------------------
+
+
+def test_cluster_bootstrap_ci_keeps_point_estimate():
+    """聚类稳健区间：点估计仍按股票交易日，区间按日期整块重抽。
+
+    2026-08-04 的教训：点估计和区间必须是同一个口径。
+    此前我用「日期等权」算区间去比「股票交易日加权」的点估计，
+    结果区间不包含点估计（[41.0%,57.4%] vs 63.8%），那是两个不同的量。
+
+    正确做法保持点估计不变，只把「同一天内多只票相关」计入不确定性，
+    实测表 A 各格区间宽度变成原来的 1.4~2.2 倍。
+    """
+    # 30 个日期，每天 10 只票；15 个日期全部命中，15 个日期全部不命中
+    per_date = [(10, 10) if i < 15 else (0, 10) for i in range(30)]
+    lo, hi, pt = ig.cluster_bootstrap_ci(per_date, b=400, seed=7)
+    assert abs(pt - 50.0) < 1e-9              # 点估计 = 150/300
+    # 同一天内完全相关 → 区间必须很宽（远宽于二项公式的 ±5.7%）
+    assert lo < 35.0 and hi > 65.0
+    # 反例：每天 10 只里恰好 5 只命中（天内无相关）→ 区间应很窄
+    lo2, hi2, pt2 = ig.cluster_bootstrap_ci([(5, 10)] * 30, b=400, seed=7)
+    assert abs(pt2 - 50.0) < 1e-9
+    assert hi2 - lo2 < 1.0
+    # 边界：空输入返回 None
+    assert ig.cluster_bootstrap_ci([], b=10, seed=1) is None
+
+
+def test_build_pool_cells_and_lookup():
+    """全池格子表：日期 → {代码: [趋势, 振幅格]}，用来数当天的板块共振只数。
+
+    关键性质：趋势用的是前一日收盘和前 60 日高点，预测振幅用的是前 10 日振幅，
+    两者都只依赖【当天之前】的数据。所以某一天的格子在开盘前就已经确定，
+    可以在 build 时离线算好，advise 不必再抓 38 只票。
+    """
+    recs = [{"date": "2026-08-04", "code": "sz300308", "trend": "下跌", "amp_cell": ">8%",
+             "o": 1, "h": 1, "l": 1, "c": 1},
+            {"date": "2026-08-04", "code": "sz301526", "trend": "下跌", "amp_cell": ">8%",
+             "o": 1, "h": 1, "l": 1, "c": 1},
+            {"date": "2026-08-04", "code": "sh688256", "trend": "上涨", "amp_cell": "4~6%",
+             "o": 1, "h": 1, "l": 1, "c": 1},
+            {"date": "2026-08-03", "code": "sz300308", "trend": "震荡", "amp_cell": "6~8%",
+             "o": 1, "h": 1, "l": 1, "c": 1}]
+    pc = ig.build_pool_cells(recs, keep_days=2)
+    assert sorted(pc) == ["2026-08-03", "2026-08-04"]
+    assert pc["2026-08-04"]["sz300308"] == ["下跌", ">8%"]
+    # 数共振：08-04 有 2 只票同处「下跌 × >8%」
+    assert ig.count_resonance(pc, "2026-08-04", "下跌", ">8%") == 2
+    assert ig.count_resonance(pc, "2026-08-04", "上涨", "4~6%") == 1
+    # 该日期不在表里 → None，不拿别的日期顶替
+    assert ig.count_resonance(pc, "2026-08-05", "下跌", ">8%") is None
+    # keep_days 只留最近 N 天
+    assert sorted(ig.build_pool_cells(recs, keep_days=1)) == ["2026-08-04"]

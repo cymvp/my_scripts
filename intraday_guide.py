@@ -25,6 +25,7 @@
 """
 import datetime
 import json
+import random
 import os
 import statistics as st
 import sys
@@ -344,6 +345,88 @@ def remaining_touch(trend, slot, cur_low, target, day_open, pred_amp, table_f):
     return {"bucket": b, "p": cell["p"], "n": cell["n"], "ratio": ratio}
 
 
+def close_position(c, hi, lo):
+    """收盘位置 =（今收 − 当日最低）÷（当日最高 − 当日最低），0~1。
+
+    1 = 收在当日最高，0 = 收在当日最低，0.5 = 正中间。
+    一字板（最高=最低）没有振幅区间，位置无定义，返回 None——不拿 0.5 顶替。
+
+    **这是当日结束才知道的量**，盘中拿不到当天的值，只能给历史分布。
+    所以它用于事后复盘和预期设定，不进挂单和止损决策。
+    """
+    rng = hi - lo
+    return (c - lo) / rng if rng > 0 else None
+
+
+def build_close_position(recs, min_n=None):
+    """按趋势汇总收盘位置的分布。
+
+    实测（739 天）下跌 0.430、震荡 0.470、上涨 0.513，单调递增：
+    下跌趋势里收盘倾向落在当日区间下半部，上涨趋势里落在上半部。
+    """
+    min_n = MIN_N_DAILY if min_n is None else min_n
+    acc = {}
+    for r in recs:
+        v = close_position(r["c"], r["h"], r["l"])
+        if v is not None:
+            acc.setdefault(r["trend"], []).append(v)
+    out = {}
+    for tr, vs in acc.items():
+        if len(vs) < min_n:
+            continue
+        vs.sort()
+        out[tr] = {"n": len(vs), "mean": sum(vs) / len(vs),
+                   "median": vs[len(vs) // 2],
+                   "p25": vs[len(vs) // 4], "p75": vs[len(vs) * 3 // 4]}
+    return out
+
+
+def need_ratio_up(cur_high, target, day_open, pred_amp):
+    """向上版：还需再涨 =(目标价 − 此刻最高)÷ 今开 ÷ 预测振幅。已触及返回 0。"""
+    if not day_open or not pred_amp:
+        return None
+    if cur_high >= target:
+        return 0.0
+    return (target - cur_high) / day_open * 100 / pred_amp
+
+
+def remaining_touch_up(trend, slot, cur_high, target, day_open, pred_amp, table_f_up):
+    """盘中的向上剩余触及概率。基准缺该格返回 None。"""
+    b = need_bucket(need_ratio_up(cur_high, target, day_open, pred_amp))
+    if b is None:
+        return None
+    if b == "已触及":
+        return {"bucket": b, "p": 100.0, "n": None}
+    cell = ((table_f_up.get(trend) or {}).get(slot) or {}).get(b)
+    return {"bucket": b, "p": cell["p"], "n": cell["n"]} if cell else None
+
+
+def build_table_f_up(recs, slots=None, min_n=200):
+    """表 F 向上版：趋势 × 时点 × 还需再涨档 → 当日最高最终突破目标的比例。"""
+    slots = slots or SLOTS[:-1]
+    acc = {}
+    for r in recs:
+        o, pred, bars = r["o"], r.get("pred_amp"), r["bars"]
+        if not o or not pred or len(bars) != 8:
+            continue
+        final_hi = max(b["h"] for b in bars)
+        for j, s in enumerate(slots):
+            cur_hi = max(b["h"] for b in bars[:j + 1])
+            for x in (1, 2, 3, 4, 5, 6, 8, 10, 12):
+                tgt = o * (1 + x / 100)
+                b = need_bucket(need_ratio_up(cur_hi, tgt, o, pred))
+                if b in (None, "已触及"):
+                    continue
+                acc.setdefault((r["trend"], s, b), []).append(final_hi > tgt)
+    out = {}
+    for (tr, s, b), v in acc.items():
+        if len(v) < min_n:
+            continue
+        out.setdefault(tr, {}).setdefault(s, {})[b] = {
+            "n": len(v), "p": sum(v) / len(v) * 100}
+    return out
+
+
 def build_table_f(recs, slots=None, min_n=200):
     """表 F：趋势 × 时点 × 还需再跌档 → 剩余触及概率。
 
@@ -595,11 +678,135 @@ def discipline_checks(portfolio, snapshots, slot):
 
 # --- 基准表生成（纯计算，输入是已经对齐好的记录，不联网）--------------------
 
-TOUCH_LEVELS = (1, 2, 3, 5)      # 表 A / B 的挂单档位，单位 %
+TOUCH_LEVELS = (1, 2, 3, 5)      # 向下（买单成交 / 止损触发）档位，单位 %
+# 向上要更高的天花板：2026-08-04 国际复材当天从今开涨 8.00%，原来最高 +7% 时
+# 五档全部「已触及」，给不出参考。向下不跟着扩——止损放到 −10% 没有实际意义。
+UP_TOUCH_LEVELS = (1, 2, 3, 5, 7, 10, 12)
 MIN_N_DAILY = 150                # 表 A / B 每格的最小样本，不足就不出这一格
 MIN_N_M30 = 100                  # 表 D / E 每格的最小样本
 CELL_ORDER = ("0~3%", "3~4%", "4~6%", "6~8%", ">8%")
 TRENDS = ("下跌", "震荡", "上涨")
+
+
+# --- 板块共振：当天有几只票落在同一格（2026-08-04 检验出的真实条件变量）------
+# 「下跌 × >8%」格里触及 −3% 的概率：孤立日 45.9%、4~7 只 36.8%、8 只以上 77.8%，
+# 最低组区间上限 57.4% 低于最高组下限 66.4%，两区间不重叠，差异成立。
+
+RESO_BUCKETS = ((4, "1~3只"), (8, "4~7只"))
+
+
+def resonance_bucket(n):
+    """当天同格票数分三档。左闭右开：3 归 1~3只，4 归 4~7只，8 归 8只以上。"""
+    for edge, name in RESO_BUCKETS:
+        if n < edge:
+            return name
+    return "8只以上"
+
+
+def attach_resonance(recs):
+    """给每条记录标上当天同格票数和共振档。原地修改。"""
+    cnt = {}
+    for r in recs:
+        if r.get("amp_cell") is None:
+            continue
+        cnt[(r["date"], r["trend"], r["amp_cell"])] = \
+            cnt.get((r["date"], r["trend"], r["amp_cell"]), 0) + 1
+    for r in recs:
+        if r.get("amp_cell") is None:
+            r["reso_n"] = None; r["reso"] = None
+            continue
+        n = cnt[(r["date"], r["trend"], r["amp_cell"])]
+        r["reso_n"] = n
+        r["reso"] = resonance_bucket(n)
+    return recs
+
+
+def build_pool_cells(recs, keep_days=5):
+    """全池格子表：日期 → {代码: [趋势, 振幅格]}，只留最近 keep_days 天。
+
+    趋势和预测振幅都只依赖当天之前的数据，所以某一天的格子在开盘前就已确定，
+    可以离线算好存进基准，advise 不必为了数共振再抓 38 只票。
+    """
+    out = {}
+    for r in recs:
+        if r.get("amp_cell") is None:
+            continue
+        out.setdefault(r["date"], {})[r["code"]] = [r["trend"], r["amp_cell"]]
+    for d in sorted(out)[:-keep_days]:
+        del out[d]
+    return out
+
+
+def count_resonance(pool_cells, date, trend, cell):
+    """当天本池有几只票落在同一格。该日期不在表里返回 None，不拿别的日期顶替。"""
+    day = (pool_cells or {}).get(date)
+    if day is None:
+        return None
+    return sum(1 for v in day.values() if v[0] == trend and v[1] == cell)
+
+
+def build_table_a_reso(recs, min_n=None):
+    """表 A 的共振分档版：趋势 × 振幅格 × 共振档 → 触及概率。
+
+    补的是表 A 缺的那个维度——今天是不是板块共振日。
+    """
+    min_n = MIN_N_DAILY if min_n is None else min_n
+    g = {}
+    for r in recs:
+        if r.get("amp_cell") is None or r.get("reso") is None:
+            continue
+        g.setdefault(r["trend"], {}).setdefault(r["amp_cell"], {}) \
+         .setdefault(r["reso"], []).append(r)
+    out = {}
+    for tr, cells in g.items():
+        for ce, resos in cells.items():
+            for rb, rows in resos.items():
+                if len(rows) < min_n:
+                    continue
+                e = {"n": len(rows), "dates": len(set(r["date"] for r in rows)),
+                     "down": {}, "up": {}}
+                for x in TOUCH_LEVELS:
+                    f = x / 100.0
+                    e["down"][str(x)] = sum(
+                        1 for r in rows if r["l"] < r["o"] * (1 - f)) / len(rows) * 100
+                for x in UP_TOUCH_LEVELS:
+                    f = x / 100.0
+                    e["up"][str(x)] = sum(
+                        1 for r in rows if r["h"] > r["o"] * (1 + f)) / len(rows) * 100
+                out.setdefault(tr, {}).setdefault(ce, {})[rb] = e
+    return out
+
+
+def cluster_bootstrap_ci(per_date, b=500, seed=20260804):
+    """聚类稳健 95% 区间。per_date 是每个日期的 (命中数, 总数)。
+
+    点估计仍按股票交易日（总命中 ÷ 总数），区间用「按日期整块重抽」——
+    每次有放回地抽 n 个日期，把被抽到日期的全部股票一起算。
+
+    2026-08-04 的教训：点估计和区间必须同口径。此前我拿「日期等权」的均值
+    去当「股票交易日加权」点估计的区间，算出区间不含点估计，那是两个不同的量。
+
+    按日期先聚合成 (hit, cnt) 再重抽，复杂度从 O(股票日) 降到 O(日期数)。
+    """
+    if not per_date:
+        return None
+    tot_h = sum(h for h, _ in per_date)
+    tot_n = sum(n for _, n in per_date)
+    if tot_n == 0:
+        return None
+    point = tot_h / tot_n * 100
+    rnd = random.Random(seed)
+    m = len(per_date)
+    sims = []
+    for _ in range(b):
+        h = c = 0
+        for _ in range(m):
+            dh, dn = per_date[rnd.randrange(m)]
+            h += dh; c += dn
+        if c:
+            sims.append(h / c * 100)
+    sims.sort()
+    return sims[int(len(sims) * 0.025)], sims[int(len(sims) * 0.975)], point
 
 
 def _group_by_cell(recs):
@@ -622,11 +829,27 @@ def build_table_a(recs, min_n=MIN_N_DAILY):
         for cell_name, rows in cells.items():
             if len(rows) < min_n:
                 continue
-            e = {"n": len(rows), "down": {}, "up": {}}
+            e = {"n": len(rows), "dates": len(set(r["date"] for r in rows)),
+                 "down": {}, "up": {}, "down_ci": {}, "up_ci": {}}
+            bydate = {}
+            for r in rows:
+                bydate.setdefault(r["date"], []).append(r)
             for x in TOUCH_LEVELS:
                 f = x / 100.0
                 e["down"][str(x)] = sum(1 for r in rows if r["l"] < r["o"] * (1 - f)) / len(rows) * 100
+                pd = [(sum(1 for r in v if r["l"] < r["o"] * (1 - f)), len(v))
+                      for v in bydate.values()]
+                ci = cluster_bootstrap_ci(pd)
+                if ci:
+                    e["down_ci"][str(x)] = [ci[0], ci[1]]
+            for x in UP_TOUCH_LEVELS:
+                f = x / 100.0
                 e["up"][str(x)] = sum(1 for r in rows if r["h"] > r["o"] * (1 + f)) / len(rows) * 100
+                pd = [(sum(1 for r in v if r["h"] > r["o"] * (1 + f)), len(v))
+                      for v in bydate.values()]
+                ci = cluster_bootstrap_ci(pd)
+                if ci:
+                    e["up_ci"][str(x)] = [ci[0], ci[1]]
             out.setdefault(trend, {})[cell_name] = e
     return out
 
@@ -954,12 +1177,17 @@ def build():
         print(f"  {name:8s} 日线 {len(drs):4d} 天 / 30分钟 {len(mrs):4d} 天")
         time.sleep(0.2)
 
+    attach_resonance(day_all)
     tables = {
         "table_a": build_table_a(day_all),
+        "table_a_reso": build_table_a_reso(day_all),
+        "pool_cells": build_pool_cells(day_all),
         "table_b": build_table_b(day_all),
         "table_d": build_table_d(m30_all),
         "table_e": build_table_e(m30_all),
         "table_f": build_table_f(m30_all),
+        "table_f_up": build_table_f_up(m30_all),
+        "close_position": build_close_position(day_all),
     }
     data = {"built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "pool": POOL,
@@ -974,9 +1202,11 @@ def build():
         json.dump(data, f, ensure_ascii=False)
     filled = sum(len(v) for v in tables["table_a"].values())
     nf = sum(len(b) for v in tables["table_f"].values() for b in v.values())
+    nr = sum(len(x) for v in tables["table_a_reso"].values() for x in v.values())
     print(f"\n基准已保存：{CACHE}")
     print(f"  日线 {len(day_all)} 个股票日，表 A 填满 {filled} 格")
     print(f"  30分钟 {len(m30_all)} 个股票日，表 F 填满 {nf} 格")
+    print(f"  表 A 共振分档填满 {nr} 格（趋势 × 振幅格 × 共振档）")
     return data
 
 
@@ -1108,7 +1338,7 @@ def _fmt_wan(x):
     return f"{x/10000:.1f}万" if x is not None else "—"
 
 
-def snapshot(code, table_e, at_slot=None):
+def snapshot(code, table_e, at_slot=None, pool_cells=None, today=None):
     """取一只票的实时状态。取数失败返回带 error 的记录，不让整体崩。"""
     snap = {"code": code, "name": POOL.get(code, code)}
     try:
@@ -1126,6 +1356,11 @@ def snapshot(code, table_e, at_slot=None):
     snap["pred_amp"] = predicted_amplitude(prior)
     snap["amp_cell"] = amp_cell(snap["pred_amp"])
     snap["prev_close"] = pc
+    # 板块共振：当天本池有几只票同处这一格。日期取最新一根日线的日期，
+    # 因为趋势和振幅格只依赖当天之前的数据，开盘前就已确定。
+    d = today or daily[-1][0]
+    snap["reso_date"] = d
+    snap["reso_n"] = count_resonance(pool_cells, d, snap["trend"], snap["amp_cell"])
 
     try:
         rt = fetch_realtime(code)
@@ -1165,6 +1400,16 @@ def _print_stock(snap, data, total, risk_pct):
     print(f"  预测振幅：{snap['pred_amp']:.2f}%（过去 {PRED_WINDOW} 个交易日日振幅中位，不乘系数）"
           if snap.get("pred_amp") else "  预测振幅：算不出（日线不足）")
     print(f"  落在表 A 的：{trend} × {cell_name}")
+    rn = snap.get("reso_n")
+    if rn:
+        rb = resonance_bucket(rn)
+        print(f"  板块共振：今天本池有 {rn} 只票同处「{trend} × {cell_name}」，落在「{rb}」档")
+    cp = (data.get("close_position") or {}).get(trend)
+    if cp:
+        print(f"  该趋势的收盘位置历史：中位 {cp['median']:.3f}"
+              f"（25分位 {cp['p25']:.3f} / 75分位 {cp['p75']:.3f}，n={cp['n']}）")
+        print("    收盘位置 =（今收−当日最低）÷（当日最高−当日最低）；1=收在最高，0=收在最低")
+        print("    收盘才知道的量，只用来设定预期，不进挂单和止损决策")
 
     print(f"\n[2] 剩余波动空间")
     slot = snap.get("slot")
@@ -1225,6 +1470,13 @@ def _print_stock(snap, data, total, risk_pct):
         print(f"  向下（买单成交 / 止损触发）：{_fmt(acell['down'], True)}")
         print(f"  向上（卖单成交 / 止盈触及）：{_fmt(acell['up'], False)}")
         print(f"  ⚠ 以上是【全天】概率，前提是这一天还没开始。盘中已经走过的部分不算在内。")
+        dci = (acell or {}).get("down_ci") or {}
+        if dci:
+            rng = "  ".join(f"−{x}% [{dci[str(x)][0]:.1f}~{dci[str(x)][1]:.1f}%]"
+                            for x in TOUCH_LEVELS if str(x) in dci)
+            print(f"  聚类稳健95%区间（向下）：{rng}")
+            print(f"    按日期整块重抽算的，比普通二项区间宽 1.4~2.2 倍——"
+                  f"同一天多只票是相关的，不这样算会高估精度")
         print(f"  该格样本 {acell['n']} 个股票日")
     note = special_cell_note(trend, cell_name)
     if note:
@@ -1232,6 +1484,29 @@ def _print_stock(snap, data, total, risk_pct):
 
     tf = data.get("table_f") or {}
     o_px, cur_lo = snap.get("open"), snap.get("low")
+    reso = (data.get("table_a_reso") or {}).get(trend, {}).get(cell_name, {})
+    if reso and snap.get("reso_n"):
+        rb = resonance_bucket(snap["reso_n"])
+        print(f"\n[5C] 按板块共振分档（表 A 缺的那个维度，2026-08-04 加）")
+        print(f"  今天落在「{rb}」档。同一格里共振程度不同，触及概率差别很大")
+        print(f"  {'共振档':<12}{'股票日':>7}{'日期数':>7}"
+              + "".join(f"{'−' + str(x) + '%':>9}" for x in TOUCH_LEVELS)
+              + "".join(f"{'+' + str(x) + '%':>9}" for x in (1, 3, 5)))
+        for k in ("1~3只", "4~7只", "8只以上"):
+            c = reso.get(k)
+            mark = " ←今天" if k == rb else ""
+            if not c:
+                print(f"  {k:<12}{'样本不足（<150 股票日）':>30}{mark}")
+                continue
+            print(f"  {k:<12}{c['n']:>7}{c['dates']:>7}"
+                  + "".join(f"{c['down'][str(x)]:>8.1f}%" for x in TOUCH_LEVELS)
+                  + "".join(f"{c['up'][str(x)]:>8.1f}%" for x in (1, 3, 5)) + mark)
+        cur = reso.get(rb)
+        base = (acell or {}).get("down", {}).get("3")
+        if cur and base is not None:
+            print(f"  你这一档的 −3% 触及概率 {cur['down']['3']:.1f}%，"
+                  f"不分档的合计值是 {base:.1f}%，差 {cur['down']['3'] - base:+.1f} 个百分点")
+
     print(f"\n[5B] 盘中真正该看的：剩余触及概率（表 F，条件化到此刻）")
     if not slot or is_final_slot(slot) or o_px is None or cur_lo is None:
         print("  当前不在可用时段（收盘段没有「剩余」可言），或拿不到盘中最低价")
@@ -1254,6 +1529,24 @@ def _print_stock(snap, data, total, risk_pct):
             print(f"  距今开 −{x}%（{tgt:.2f} 元）{'':<6}{max(0, need):>9.2f}%{r['bucket']:>12}"
                   f"{r['p']:>13.1f}%{fs:>14}")
         print("  最后一列是表 A 的全天概率，列出来是为了看清差多少——**盘中不要用它**。")
+
+        tfu = data.get("table_f_up") or {}
+        cur_hi = snap.get("high")
+        if tfu and cur_hi is not None:
+            print(f"  向上（此刻最高 {cur_hi:.2f}，距今开 {(cur_hi - o_px) / o_px * 100:+.2f}%）：")
+            print(f"  {'目标价位':<22}{'还需再涨':>10}{'档':>12}{'剩余触及概率':>14}{'全天概率(错)':>14}")
+            for x in UP_TOUCH_LEVELS:
+                tgt = o_px * (1 + x / 100)
+                r = remaining_touch_up(trend, slot, cur_hi, tgt, o_px, snap["pred_amp"], tfu)
+                full = (acell or {}).get("up", {}).get(str(x))
+                fs = f"{full:.1f}%" if full is not None else "—"
+                need = max(0.0, (tgt - cur_hi) / o_px * 100)
+                if not r:
+                    print(f"  距今开 +{x}%（{tgt:.2f} 元）{'':<6}{need:>9.2f}%{'基准缺该格':>12}"
+                          f"{'—':>14}{fs:>14}")
+                    continue
+                print(f"  距今开 +{x}%（{tgt:.2f} 元）{'':<6}{need:>9.2f}%{r['bucket']:>12}"
+                      f"{r['p']:>13.1f}%{fs:>14}")
 
 
 def _print_slot_structure(snaps, data, slot):
@@ -1330,7 +1623,8 @@ def advise(argv):
 
     snaps = {}
     for code in holdings:
-        snaps[code] = snapshot(code, te, at_slot)
+        snaps[code] = snapshot(code, te, at_slot,
+                               pool_cells=data.get('pool_cells'))
         _print_stock(snaps[code], data, total, risk)
 
     cur_slot = at_slot or now_slot()
