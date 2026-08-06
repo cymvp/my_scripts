@@ -24,7 +24,10 @@ import requests
 from zoneinfo import ZoneInfo
 
 BJT = ZoneInfo("Asia/Shanghai"); KST = ZoneInfo("Asia/Seoul"); TWT = ZoneInfo("Asia/Taipei")
-STOCKS = [("中际旭创", "sz300308"), ("寒武纪", "sh688256"), ("澜起科技", "sh688008")]
+# 2026-08-06 与 ycui_market_advisor 的默认清单对齐（用户 2026-08-04 确认的长期持仓）。
+# 长鑫科技 2026-07-27 上市，日线不足时脚本会自动跳过它的波动率分层——这是预期行为，
+# 不是 bug：新股没有 5 日波动率历史，任何「预期跳空 x%」的估算都不适用。
+STOCKS = [("中际旭创", "sz300308"), ("国际复材", "sz301526"), ("长鑫科技", "sh688825")]
 
 def curl(url):
     r = subprocess.run(["/usr/bin/curl", "-sL", "--noproxy", "*", "-m", "25",
