@@ -91,34 +91,37 @@
     {
       "name": "sector_morning_0930",
       "cron": "0 10 * * 1-5",
-      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。",
-      "job_id": "",
+      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 09:30 BJT。",
+      "job_id": "90ac0c12",
       "created": "2026-08-06",
       "desc": "交易日 9:30 BJT 早盘板块播报 → Slack。cron 10:00 JST = 目标 9:30 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
-      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。"
+      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
+      "rebuilt": "2026-08-06"
     },
     {
       "name": "sector_morning_0945",
       "cron": "15 10 * * 1-5",
-      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。",
-      "job_id": "",
+      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 09:45 BJT。",
+      "job_id": "4f121ba5",
       "created": "2026-08-06",
       "desc": "交易日 9:45 BJT 早盘板块播报 → Slack。cron 10:15 JST = 目标 9:45 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
-      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。"
+      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
+      "rebuilt": "2026-08-06"
     },
     {
       "name": "sector_morning_1000",
       "cron": "30 10 * * 1-5",
-      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。",
-      "job_id": "",
+      "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 10:00 BJT。",
+      "job_id": "25189eef",
       "created": "2026-08-06",
       "desc": "交易日 10:00 BJT 早盘板块播报 → Slack。cron 10:30 JST = 目标 10:00 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
-      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。"
+      "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
+      "rebuilt": "2026-08-06"
     }
   ],
   "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
-  "_status": "2026-08-06 下午（本会话写）：新增 sector_morning_0930 / _0945 / _1000 三条，job_id 留空待 loop agent 建。原实现是 macOS launchd（com.ycui.sector-morning），本会话已 CronDelete 等效操作——launchctl unload 并删除 plist，避免与 loop 任务双触发。\n\n2026-08-06 午（负责 loop 的 agent 写）：按本文件整体重建，6 个 job 全部在跑，先 CronDelete 再 CronCreate 避免双触发；旧 id 见 prev_job_id，到期日顺延至 2026-08-13。**本轮同时改了三条 prompt**：① 早盘/尾盘加「KOSPI 必须用新浪 znb_KOSPI 取真值」——脚本走 Yahoo ^KS11，prev_close 落后一到两个交易日，8/03~8/06 连续四天读错，其中 8/04 与 8/06 方向反，8/06 那次还导致「KOSPI 反向」告警误发（当天实际是美股跌+KOSPI 跌的同向情形，被误降级）；两条还加了「本日已发过就不要重复发 Slack」，因为 8/06 早盘任务在 08:50 和 12:03 触发了两次。② loop_checker 判据从「只补缺失」改为「缺失的补 + created/rebuilt 满 4 天主动续期」，根治 */3 与 7 天到期不对齐的集体失效风险。③ intraday_daily 抽查从单格扩到「下跌×6~8%」整行——8/05 实测 −3% 那格只偏 0.90pp 没触发，但同行 −1%/−2%/+3%/+5% 四列都超了 1pp。提醒：CronList 按会话隔离，起任务的只能有一个会话；8/06 的重复触发可能就是别的会话也起了同名任务，本会话无法验证。"
+  "_status": "2026-08-06 下午（负责 loop 的 agent 写）：**已建三条 sector_morning 任务**——0930=90ac0c12、0945=4f121ba5、1000=25189eef，到期日 2026-08-13。建前核实了三件前置条件：① launchd 旧实现确认已卸载（plist 已删、不在 launchctl 列表），不会与 loop 任务双发 Slack；② 脚本存在（21944 字节）；③ webhook 文件 ~/.config/ycui/slack.json 存在且权限 600。cron 时点逐条验算过：0 10 / 15 10 / 30 10 JST 减 1 小时时区、加 30 分钟实测延迟，正好落在 9:30 / 9:45 / 10:00 BJT。已用 --dry-run 实测脚本可跑通（13:22 盘中跑出完整播报、未发 Slack）。注意：macOS 没有 GNU timeout 命令，包装脚本时不要用。\n\n2026-08-06 下午（本会话写）：新增 sector_morning_0930 / _0945 / _1000 三条，job_id 留空待 loop agent 建。原实现是 macOS launchd（com.ycui.sector-morning），本会话已 CronDelete 等效操作——launchctl unload 并删除 plist，避免与 loop 任务双触发。\n\n2026-08-06 午（负责 loop 的 agent 写）：按本文件整体重建，6 个 job 全部在跑，先 CronDelete 再 CronCreate 避免双触发；旧 id 见 prev_job_id，到期日顺延至 2026-08-13。**本轮同时改了三条 prompt**：① 早盘/尾盘加「KOSPI 必须用新浪 znb_KOSPI 取真值」——脚本走 Yahoo ^KS11，prev_close 落后一到两个交易日，8/03~8/06 连续四天读错，其中 8/04 与 8/06 方向反，8/06 那次还导致「KOSPI 反向」告警误发（当天实际是美股跌+KOSPI 跌的同向情形，被误降级）；两条还加了「本日已发过就不要重复发 Slack」，因为 8/06 早盘任务在 08:50 和 12:03 触发了两次。② loop_checker 判据从「只补缺失」改为「缺失的补 + created/rebuilt 满 4 天主动续期」，根治 */3 与 7 天到期不对齐的集体失效风险。③ intraday_daily 抽查从单格扩到「下跌×6~8%」整行——8/05 实测 −3% 那格只偏 0.90pp 没触发，但同行 −1%/−2%/+3%/+5% 四列都超了 1pp。提醒：CronList 按会话隔离，起任务的只能有一个会话；8/06 的重复触发可能就是别的会话也起了同名任务，本会话无法验证。"
 }
