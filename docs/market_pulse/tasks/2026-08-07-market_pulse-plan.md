@@ -939,7 +939,7 @@ def pick_snapshot(store, target, tol_sec):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 70 passed
+Expected: 69 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1171,7 +1171,7 @@ def store_status(store, now):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 84 passed
+Expected: 82 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1397,7 +1397,7 @@ def render_strip(state):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 96 passed
+Expected: 94 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1658,7 +1658,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 105 passed
+Expected: 103 passed
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1738,7 +1738,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 253 passed（原有 148 + 新增 105）
+Expected: 251 passed（原有 148 + 新增 103）
 
 - [ ] **Step 8: 提交**
 
