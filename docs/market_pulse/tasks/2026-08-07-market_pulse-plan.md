@@ -828,7 +828,7 @@ git commit -m "feat(market_pulse): 超额收益与池内排名"
 
 - [ ] **Step 1: 写失败的测试**
 
-追加到 `test_market_pulse.py`（文件顶部加 `import datetime`）：
+追加到 `test_market_pulse.py`：
 
 ```python
 # --- parse_ts / pick_snapshot ---------------------------------------------
