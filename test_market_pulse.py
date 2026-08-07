@@ -390,3 +390,106 @@ def test_pick_snapshot_tolerance_is_third_of_window():
     assert mp.window_tolerance(15) == pytest.approx(5.0)
     assert mp.window_tolerance(60) == pytest.approx(20.0)
     assert mp.window_tolerance(300) == pytest.approx(100.0)
+
+
+# --- 落盘 IO --------------------------------------------------------------
+
+def test_append_store_writes_in_session(tmp_path):
+    p = tmp_path / "s.jsonl"
+    snap = {"t": "2026-08-07 13:24:15", "r": {"sz300308": 2.35}, "idx": {}}
+    assert mp.append_store(snap, path=str(p)) is True
+    assert len(p.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_append_store_skips_outside_session(tmp_path):
+    """午休不写——避免文件里灌一堆重复快照。"""
+    p = tmp_path / "s.jsonl"
+    snap = {"t": "2026-08-07 12:00:00", "r": {"sz300308": 2.35}, "idx": {}}
+    assert mp.append_store(snap, path=str(p)) is False
+    assert not p.exists()
+
+
+def test_load_store_roundtrip(tmp_path):
+    p = tmp_path / "s.jsonl"
+    now = mp.parse_ts("2026-08-07 13:25:00")
+    for i in range(10):
+        mp.append_store({"t": f"2026-08-07 13:24:{i:02d}",
+                         "r": {"sz300308": 2.0 + i * 0.1}, "idx": {}}, path=str(p))
+    got = mp.load_store(120, now=now, path=str(p))
+    assert len(got) == 10
+    assert got[0]["t"] == "2026-08-07 13:24:00"
+    assert got[-1]["r"]["sz300308"] == pytest.approx(2.9)
+
+
+def test_load_store_filters_by_age(tmp_path):
+    """只要最近 N 秒的，更早的不读。"""
+    p = tmp_path / "s.jsonl"
+    for ts in ("13:20:00", "13:24:00", "13:24:50"):
+        mp.append_store({"t": f"2026-08-07 {ts}", "r": {}, "idx": {}}, path=str(p))
+    got = mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"), path=str(p))
+    assert [s["t"] for s in got] == ["2026-08-07 13:24:00", "2026-08-07 13:24:50"]
+
+
+def test_load_store_skips_corrupt_lines(tmp_path):
+    """损坏行跳过继续读，不让整个文件报废。"""
+    p = tmp_path / "s.jsonl"
+    p.write_text('{"t":"2026-08-07 13:24:00","r":{},"idx":{}}\n'
+                 'NOT JSON\n'
+                 '{"t":"2026-08-07 13:24:30","r":{},"idx":{}}\n', encoding="utf-8")
+    got = mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"), path=str(p))
+    assert len(got) == 2
+
+
+def test_load_store_missing_file(tmp_path):
+    assert mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"),
+                         path=str(tmp_path / "nope.jsonl")) == []
+
+
+def test_rotate_store_clears_stale_day(tmp_path):
+    """昨天的记录必须清掉——昨收接今开会算出跨夜跳空的假速度。"""
+    p = tmp_path / "s.jsonl"
+    p.write_text('{"t":"2026-08-06 14:00:00","r":{},"idx":{}}\n', encoding="utf-8")
+    assert mp.rotate_store("2026-08-07", path=str(p)) is True
+    assert p.read_text(encoding="utf-8") == ""
+
+
+def test_rotate_store_keeps_today(tmp_path):
+    p = tmp_path / "s.jsonl"
+    p.write_text('{"t":"2026-08-07 09:31:00","r":{},"idx":{}}\n', encoding="utf-8")
+    assert mp.rotate_store("2026-08-07", path=str(p)) is False
+    assert p.read_text(encoding="utf-8") != ""
+
+
+def test_rotate_store_missing_file(tmp_path):
+    assert mp.rotate_store("2026-08-07", path=str(tmp_path / "nope.jsonl")) is False
+
+
+# --- store_status 三种不可用状态 -------------------------------------------
+
+def test_store_status_not_running_when_empty():
+    got, why = mp.store_status([], mp.parse_ts("2026-08-07 13:25:00"))
+    assert got == "not_running"
+    assert "悬浮窗未启动" in why
+
+
+def test_store_status_not_running_when_stale():
+    """最后一条超过 STALE_SEC（60 秒）视为采集已停。"""
+    store = [{"t": "2026-08-07 13:23:00", "r": {}, "idx": {}}]
+    got, _ = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
+    assert got == "not_running"
+
+
+def test_store_status_warming_up():
+    """采集刚启动，最早一条距现在不足最长窗口（300 秒）。"""
+    store = [{"t": "2026-08-07 13:24:13", "r": {}, "idx": {}},
+             {"t": "2026-08-07 13:25:00", "r": {}, "idx": {}}]
+    got, why = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
+    assert got == "warming_up"
+    assert "47" in why and "300" in why
+
+
+def test_store_status_ok():
+    store = [{"t": "2026-08-07 13:19:00", "r": {}, "idx": {}},
+             {"t": "2026-08-07 13:25:00", "r": {}, "idx": {}}]
+    got, _ = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
+    assert got == "ok"

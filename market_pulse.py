@@ -5,6 +5,7 @@
 只描述已经发生的涨跌，不做方向预测。
 """
 import datetime
+import json
 import os
 import statistics as st
 
@@ -205,3 +206,81 @@ def pick_snapshot(store, target, tol_sec):
         if best_gap is None or gap < best_gap:
             best, best_gap = snap, gap
     return best
+
+
+def append_store(snap, path=STORE):
+    """把一条快照追加落盘，返回是否真的写了。
+
+    非交易时段直接跳过：午休和盘后行情不变，写进去只是一堆重复记录，
+    还会污染速度窗口的取值。
+    """
+    if not in_session(snap["t"].split(" ")[-1]):
+        return False
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(snap, ensure_ascii=False) + "\n")
+    return True
+
+
+def load_store(seconds, now=None, path=STORE):
+    """读回最近 seconds 秒的快照，按时间升序。
+
+    损坏行跳过继续读——一行 JSON 写坏不该让整个文件报废。
+    文件不存在返回空列表。
+    """
+    if not os.path.exists(path):
+        return []
+    now = now or datetime.datetime.now()
+    cutoff = now - datetime.timedelta(seconds=seconds)
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                snap = json.loads(line)
+                ts = parse_ts(snap["t"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if ts >= cutoff:
+                out.append(snap)
+    out.sort(key=lambda s: s["t"])
+    return out
+
+
+def rotate_store(today, path=STORE):
+    """最后一条不是今天就清空，返回是否清空了。
+
+    昨天的价格接到今天的序列上，会算出一个跨夜跳空的假速度。
+    """
+    if not os.path.exists(path):
+        return False
+    with open(path, encoding="utf-8") as fh:
+        lines = [x for x in fh if x.strip()]
+    if not lines:
+        return False
+    try:
+        last_day = json.loads(lines[-1])["t"].split(" ")[0]
+    except (ValueError, KeyError, IndexError):
+        last_day = None
+    if last_day == today:
+        return False
+    open(path, "w", encoding="utf-8").close()
+    return True
+
+
+def store_status(store, now):
+    """判断落盘数据能不能用，返回 (状态码, 说明)。
+
+    三种状态分别对应不同的面板文案，都不给数字、也不用别的数据源凑。
+    """
+    if not store:
+        return "not_running", "不可用（悬浮窗未启动）"
+    age = (now - parse_ts(store[-1]["t"])).total_seconds()
+    if age > STALE_SEC:
+        return "not_running", f"不可用（悬浮窗未启动，最后一条在 {age:.0f} 秒前）"
+    span = (now - parse_ts(store[0]["t"])).total_seconds()
+    longest = max(WINDOWS)
+    if span < longest:
+        return "warming_up", f"不可用（已采集 {span:.0f} 秒，需 {longest} 秒）"
+    return "ok", ""
