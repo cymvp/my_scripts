@@ -278,3 +278,56 @@ def test_verdict_note_mentions_ratio():
     br = {"up": 34, "down": 4, "flat": 0, "valid": 38}
     _, why = mp.verdict(br, 2.35)
     assert "34/38" in why
+
+
+# --- excess 超额 -----------------------------------------------------------
+
+def test_excess_normal():
+    """2026-08-07 11:30 实测：中际旭创 +2.35%，科技池中位 +1.66%。"""
+    assert mp.excess(2.35, 1.66) == pytest.approx(0.69)
+
+
+def test_excess_negative():
+    assert mp.excess(-1.20, 1.66) == pytest.approx(-2.86)
+
+
+def test_excess_none_when_bench_missing():
+    assert mp.excess(2.35, None) is None
+
+
+def test_excess_none_when_stock_missing():
+    assert mp.excess(None, 1.66) is None
+
+
+# --- rank 池内排名 ---------------------------------------------------------
+
+def test_rank_normal():
+    """名次 = 严格大于你的票数 + 1。"""
+    assert mp.rank(3.0, [5.0, 3.0, 1.0]) == (2, 3)
+
+
+def test_rank_first():
+    assert mp.rank(5.0, [5.0, 3.0, 1.0]) == (1, 3)
+
+
+def test_rank_ties_share_place_and_skip():
+    """并列给相同名次，之后跳号：[5.0, 3.0, 3.0, 1.0] 的名次是 1、2、2、4。"""
+    all_rs = [5.0, 3.0, 3.0, 1.0]
+    assert mp.rank(5.0, all_rs) == (1, 4)
+    assert mp.rank(3.0, all_rs) == (2, 4)
+    assert mp.rank(1.0, all_rs) == (4, 4)
+
+
+def test_rank_denominator_is_valid_count():
+    """分母是有效票数：38 只里 3 只停牌，分母是 35。"""
+    all_rs = [1.0] * 35 + [None, None, None]
+    _, n = mp.rank(1.0, all_rs)
+    assert n == 35
+
+
+def test_rank_none_when_stock_missing():
+    assert mp.rank(None, [1.0, 2.0]) == (None, 2)
+
+
+def test_rank_none_when_pool_empty():
+    assert mp.rank(1.0, []) == (None, 0)

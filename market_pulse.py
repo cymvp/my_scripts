@@ -150,3 +150,25 @@ def verdict(br, r_stock):
     if down_ratio >= VERDICT_RATIO and r_stock < 0:
         return "同跌", note
     return "分化", note
+
+
+def excess(r_stock, r_bench):
+    """超额 = 个股涨跌幅 − 基准涨跌幅，单位百分点(pp)。"""
+    if r_stock is None or r_bench is None:
+        return None
+    return r_stock - r_bench
+
+
+def rank(r_stock, all_rs):
+    """池内名次，返回 (名次, 有效数)。
+
+    名次 = 涨跌幅严格大于你的票数 + 1。并列给相同名次，之后跳号
+    （[5.0, 3.0, 3.0, 1.0] 的名次是 1、2、2、4）。
+    分母是有效票数，停牌票（None）不计入。
+
+    超额单独看没有信息量（+0.69pp 是强是弱看不出来），配上名次才有参照点。
+    """
+    valid = [r for r in all_rs if r is not None]
+    if r_stock is None or not valid:
+        return None, len(valid)
+    return sum(1 for r in valid if r > r_stock) + 1, len(valid)
