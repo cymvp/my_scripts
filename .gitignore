@@ -7,3 +7,5 @@ intraday_baseline.json
 intraday_bars.jsonl
 # 基准重算的日志，每周覆盖一次
 build.log
+# market_pulse 采集的快照，可重建，不入库
+pulse_store.jsonl
