@@ -487,14 +487,21 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     hold_rows = []
     all_rs = list(rs_now.values())
     for code in holdings:
-        r = live_r.get(code)
+        # 池内票的 r 一律取 store 里的那个值，不取 live_r。
+        # 2026-08-07 的「排名 39/38」就是这两个来源精度分叉造成的：
+        # 这只票自己的 store 值比它的 live_r 值大，rank 把自己也数了进去。
+        # 只靠"两处都记得 round 到同样位数"是约定，会随新调用点复发；
+        # 让池内票的比较值和被比较的池子同源，才是结构上消灭这一类 bug。
+        # live_r 只服务池外持仓票（长鑫科技），它们本来就不在 all_rs 里。
+        r = rs_now.get(code) if code in POOL_CODES else live_r.get(code)
         place, total = (rank(r, all_rs) if code in POOL_CODES else (None, len(all_rs)))
         hold_rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
                           "r": r, "excess": excess(r, pool_median),
                           "rank": (place, total),
                           "in_pool": code in POOL_CODES})
 
-    first = live_r.get(holdings[0]) if holdings else None
+    first = (rs_now.get(holdings[0]) if holdings and holdings[0] in POOL_CODES
+             else (live_r.get(holdings[0]) if holdings else None))
     return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
             "status": status, "rows": rows, "breadth": br,
             "holdings": hold_rows, "verdict": verdict(br, first),

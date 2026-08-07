@@ -843,13 +843,41 @@ def test_rank_never_exceeds_pool_size():
 
 
 def test_build_state_rank_within_pool_size():
-    """组装出来的持仓名次不能超过有效票数。
-
-    这条走的是完整链路（store 里的 r 与 live_r 同源同精度），
-    是 39/38 那个 bug 的端到端守护。
-    """
+    """组装出来的持仓名次不能超过有效票数。"""
     st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
     for h in st["holdings"]:
         place, total = h["rank"]
         if place is not None:
             assert place <= total, f"{h['name']} 名次 {place}/{total} 越界"
+
+
+def test_build_state_rank_survives_precision_divergence():
+    """store 与 live_r 精度不一致时，池内票的名次仍不能越界。
+
+    2026-08-07 审查指出：上一版那条「端到端守护」让 live_r 走默认值
+    （= store 的拷贝），精度天然一致，永远构造不出 39/38 的触发条件，
+    等于打偏了靶心。这条显式喂进分叉输入——store 存舍入值 2.351、
+    live_r 给原始值 2.3508（比 store 里自己那个值小）。
+    修法是让池内票的 r 一律取 store 值，所以 live_r 再怎么分叉也影响不到名次。
+    """
+    raw = 2.350785340314141
+    snaps = _two_snaps()
+    snaps[-1]["r"]["sz300308"] = round(raw, 3)          # store：2.351
+    st = mp.build_state(snaps, mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sz300308": raw})        # live：2.3508，偏小
+    zj = [h for h in st["holdings"] if h["name"] == "中际旭创"][0]
+    place, total = zj["rank"]
+    assert place <= total, f"名次 {place}/{total} 越界——精度分叉又回来了"
+    assert zj["r"] == round(raw, 3), "池内票的 r 必须取 store 值，不取 live_r"
+
+
+def test_build_state_pool_outsider_still_uses_live_r():
+    """池外票没进 store，它的 r 必须仍然从 live_r 取。
+
+    上一条把池内票改成取 store 值，不能顺手把池外票也断了——
+    长鑫科技不落盘，live_r 是它唯一的数据来源。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    cx = [h for h in st["holdings"] if h["name"] == "长鑫科技"][0]
+    assert cx["r"] == pytest.approx(-0.17)
