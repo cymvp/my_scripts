@@ -1550,24 +1550,41 @@ git commit -m "feat(market_pulse): 命令行面板与悬浮窗单行渲染"
 # --- parse_pool_quotes / build_state --------------------------------------
 
 def test_parse_pool_quotes_computes_r():
-    raw = [{"code": "sz300308", "px": 977.45, "prev_close": 955.0, "ok": True}]
+    raw = [{"code": "sz300308", "current": 977.45, "prev_close": 955.0, "ok": True}]
     got = mp.parse_pool_quotes(raw)
     assert got["sz300308"]["r"] == pytest.approx(2.3508, abs=1e-3)
 
 
 def test_parse_pool_quotes_drops_suspended():
     """停牌（现价为 0）和昨收为 0 的票直接剔除，不列名、不提示。"""
-    raw = [{"code": "a", "px": 0.0, "prev_close": 10.0, "ok": True},
-           {"code": "b", "px": 10.0, "prev_close": 0.0, "ok": True},
-           {"code": "c", "px": 11.0, "prev_close": 10.0, "ok": True}]
+    raw = [{"code": "a", "current": 0.0, "prev_close": 10.0, "ok": True},
+           {"code": "b", "current": 10.0, "prev_close": 0.0, "ok": True},
+           {"code": "c", "current": 11.0, "prev_close": 10.0, "ok": True}]
     got = mp.parse_pool_quotes(raw)
     assert set(got) == {"c"}
 
 
 def test_parse_pool_quotes_drops_failed():
-    raw = [{"code": "a", "px": None, "prev_close": None, "ok": False},
-           {"code": "c", "px": 11.0, "prev_close": 10.0, "ok": True}]
+    raw = [{"code": "a", "current": None, "prev_close": None, "ok": False},
+           {"code": "c", "current": 11.0, "prev_close": 10.0, "ok": True}]
     assert set(mp.parse_pool_quotes(raw)) == {"c"}
+
+
+def test_parse_pool_quotes_uses_stock_watch_field_names():
+    """入参字段名必须和 stock_watch.parse_sina_response 的真实输出一致。
+
+    2026-08-07 踩过的坑：计划里写的入参键是 px，而真实字段是 current
+    （stock_watch.py:75-78）。单测因为用自造数据而自洽通过，真跑起来
+    每只票的 current 都取不到、整批被剔除，池子全空、判定全废。
+    这条测试直接拿 parse_sina_response 的真实输出当输入，把契约钉死。
+    """
+    import stock_watch as sw
+    raw = ('var hq_str_sz300308="中际旭创,981.09,955.00,977.45,999.88,963.00,'
+           '977.40,977.45,20098011,19775573459,' + ','.join(["0"] * 20) + '";')
+    got = mp.parse_pool_quotes(sw.parse_sina_response(raw))
+    assert "sz300308" in got, "字段名对不上，真实行情会被整批剔除"
+    assert got["sz300308"]["r"] == pytest.approx(2.3508, abs=1e-3)
+    assert got["sz300308"]["px"] == pytest.approx(977.45)
 
 
 def test_build_state_marks_all_windows_unavailable_when_not_running():
@@ -1654,13 +1671,21 @@ Expected: FAIL，`AttributeError: module 'market_pulse' has no attribute 'parse_
 def parse_pool_quotes(raw_quotes):
     """把 stock_watch.fetch_quotes 的返回转成 {代码: {"r": 涨跌幅%, "px": 现价}}。
 
+    入参的字段名是 current / prev_close，那是 stock_watch.parse_sina_response
+    的输出（stock_watch.py:75-78），只在 len(fields) > 9 时才附上；报文太短
+    （停牌、未开盘）时这两个键不存在，get 返回 None 会被下面剔除。
+    输出侧用 px 这个键名，那是本模块自己的形状。
+
+    这里从原始现价与昨收重算涨跌幅，不用 stock_watch 现成的 change_pct——
+    后者四舍五入到两位，速度是两个涨跌幅之差，精度损失会被放大。
+
     停牌（现价为 0）和昨收为 0 的票直接剔除，不列名、不提示。
     """
     out = {}
     for q in raw_quotes:
         if not q.get("ok"):
             continue
-        px, pc = q.get("px"), q.get("prev_close")
+        px, pc = q.get("current"), q.get("prev_close")
         if not px or not pc:
             continue
         out[q["code"]] = {"r": (px - pc) / pc * 100, "px": px}
