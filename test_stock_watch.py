@@ -273,3 +273,21 @@ def test_us_ext_label_by_current_et_clock():
     assert sw._us_ext_label(at(10, 30)) == ""      # 盘中不显示 ext
     assert sw._us_ext_label(at(17, 0)) == "后"
     assert sw._us_ext_label(at(2, 0)) == ""        # 盘前开始前
+
+
+# --- 市场脉搏接入（Task 10）-------------------------------------------------
+
+def test_watch_codes_merge_includes_pool():
+    """悬浮窗请求的代码表里必须含 38 只池子票，否则采集拿不到数据。"""
+    import market_pulse as mp
+    import stock_watch as sw
+    merged = mp.merge_codes(sw.load_config())
+    for code in mp.POOL_CODES:
+        assert code in merged
+
+
+def test_watch_codes_has_no_duplicates():
+    import market_pulse as mp
+    import stock_watch as sw
+    merged = mp.merge_codes(sw.load_config())
+    assert len(merged) == len(set(merged))

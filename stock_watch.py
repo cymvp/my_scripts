@@ -324,6 +324,8 @@ def _build_app():
 
     import trade_assist as ta
 
+    import market_pulse as mp
+
     class StockWatch(tk.Tk):
         def __init__(self):
             super().__init__()
@@ -364,6 +366,11 @@ def _build_app():
             self.t_sig = {}               # code -> 当前活动信号
             self.t_summary = {}           # code -> 已发日报日期
             self.t_ui = {}                # code -> {status,fill,skip} 该股信号栏控件
+
+            # --- 市场脉搏（见 docs/market_pulse/spec/）---
+            self.pulse_text = None      # 横条末尾那个格子的标签
+            self._pulse_strip = ""      # 最近一次算出来的单行文案
+            mp.rotate_store(mp.now_bj().strftime("%Y-%m-%d"))
 
             self._render_rows()
             self.refresh()
@@ -746,6 +753,10 @@ def _build_app():
                              font=("Menlo", 15), cursor="pointinghand")
             minus.pack(side="left", padx=(2, 4), anchor="n")
             minus.bind("<Button-1>", lambda e: self._prompt_delete())
+            # 横条末尾：市场脉搏单行文案（内容在 _pulse_tick 里更新）
+            self.pulse_text = tk.Label(self.body, text=self._pulse_strip,
+                                       bg=BG, fg=FLAT_COLOR, font=("Menlo", 11))
+            self.pulse_text.pack(side="left", padx=(12, 4), anchor="n")
             self._update_labels()
 
         def _update_labels(self):
@@ -776,9 +787,30 @@ def _build_app():
                         lab = ""
                     pct_lbl.config(text=f"{lab}{p:+.2f}%", fg=color)
 
+        def _pulse_tick(self, quotes):
+            """把池子部分落盘并重算单行文案。任何异常都不能影响自选渲染。"""
+            try:
+                now = mp.now_bj()      # 必须用北京时间，本机是 JST 快 1 小时
+                pool = mp.parse_pool_quotes(quotes)
+                snap = {"t": now.strftime(mp.TS_FMT),
+                        "r": {c: v["r"] for c, v in pool.items()
+                              if c in mp.POOL_CODES},
+                        "idx": {c: v["r"] for c, v in pool.items()
+                                if c in mp.IDX_CODES}}
+                mp.append_store(snap)
+                store = mp.load_store(max(mp.WINDOWS) * 2, now=now)
+                live_r = {c: v["r"] for c, v in pool.items()}
+                state = mp.build_state(store, now, live_r=live_r)
+                self._pulse_strip = mp.render_strip(state)
+            except Exception as exc:          # 脉搏出错不能连累自选行情
+                self._pulse_strip = "脉搏异常"
+                _trade_log(f"pulse error: {exc}")
+            if self.pulse_text is not None:
+                self.pulse_text.config(text=self._pulse_strip)
+
         def refresh(self):
             try:
-                quotes = fetch_quotes(self.codes)
+                quotes = fetch_quotes(mp.merge_codes(self.codes))
                 self.quotes = {q["code"]: q for q in quotes}
                 self._set_status(f"● {time.strftime('%H:%M')}", DOWN_COLOR)
                 for code in list(self.books):
@@ -789,6 +821,7 @@ def _build_app():
                             import traceback
                             _trade_log(f"{code} ⚠异常: {traceback.format_exc().splitlines()[-1]}")
                             traceback.print_exc()
+                self._pulse_tick(quotes)
             except Exception:
                 # 网络/接口失败：保留上次价格，仅标记未更新
                 self._set_status(f"⚠ {time.strftime('%H:%M')}", UP_COLOR)
