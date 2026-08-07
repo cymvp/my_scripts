@@ -165,3 +165,116 @@ def test_aggregate_uses_median_not_mean():
     """
     val, _ = mp.aggregate([0.1, 0.1, 0.1, 20.0])
     assert val == pytest.approx(0.1)      # 中位数 0.1；平均数会是 5.075
+
+
+# --- breadth 宽度 ----------------------------------------------------------
+
+def test_breadth_counts():
+    """2026-08-07 11:30 实测：38 只里上涨 34、下跌 4、平盘 0。"""
+    rs = {f"c{i}": 1.0 for i in range(34)}
+    rs.update({f"d{i}": -1.0 for i in range(4)})
+    br = mp.breadth(rs)
+    assert (br["up"], br["down"], br["flat"], br["valid"]) == (34, 4, 0, 38)
+
+
+def test_breadth_counts_flat():
+    br = mp.breadth({"a": 1.0, "b": 0.0, "c": -1.0})
+    assert (br["up"], br["down"], br["flat"]) == (1, 1, 1)
+
+
+def test_breadth_skips_none():
+    """停牌票的 r 是 None，从有效数里剔除。"""
+    br = mp.breadth({"a": 1.0, "b": None, "c": -1.0})
+    assert br["valid"] == 2
+
+
+def test_breadth_flip_down():
+    """涨转跌算一次翻向。"""
+    br = mp.breadth({"a": -0.1}, {"a": 0.3})
+    assert br["flip_down"] == 1
+    assert br["flip_up"] == 0
+
+
+def test_breadth_flip_up():
+    br = mp.breadth({"a": 0.2}, {"a": -0.5})
+    assert br["flip_up"] == 1
+    assert br["flip_down"] == 0
+
+
+def test_breadth_flat_is_not_a_flip():
+    """从 +0.2 变成 0.0 不算翻向——平盘不是方向。"""
+    br = mp.breadth({"a": 0.0}, {"a": 0.2})
+    assert br["flip_down"] == 0
+    assert br["flip_up"] == 0
+
+
+def test_breadth_no_past_gives_zero_flips():
+    br = mp.breadth({"a": 1.0})
+    assert br["flip_down"] == 0 and br["flip_up"] == 0
+
+
+# --- verdict 判定 ----------------------------------------------------------
+
+def test_verdict_alone_falling():
+    """池内 34/38 上涨（89% ≥ 60%），你的票在跌 —— 独跌。"""
+    br = {"up": 34, "down": 4, "flat": 0, "valid": 38}
+    assert mp.verdict(br, -1.2)[0] == "独跌"
+
+
+def test_verdict_falling_together():
+    br = {"up": 5, "down": 30, "flat": 3, "valid": 38}
+    assert mp.verdict(br, -1.2)[0] == "同跌"
+
+
+def test_verdict_rising_together():
+    br = {"up": 34, "down": 4, "flat": 0, "valid": 38}
+    assert mp.verdict(br, 2.35)[0] == "同涨"
+
+
+def test_verdict_mixed():
+    br = {"up": 20, "down": 18, "flat": 0, "valid": 38}
+    assert mp.verdict(br, -1.2)[0] == "分化"
+
+
+def test_verdict_boundary_is_inclusive():
+    """正好 60% 算命中。38 只的 60% 是 22.8，所以 23 只命中。"""
+    br = {"up": 23, "down": 15, "flat": 0, "valid": 38}
+    assert mp.verdict(br, -0.5)[0] == "独跌"
+    br2 = {"up": 22, "down": 16, "flat": 0, "valid": 38}
+    assert mp.verdict(br2, -0.5)[0] == "分化"
+
+
+def test_verdict_denominator_follows_valid_count():
+    """分母是有效票数，不是固定的 38。
+
+    35 只有效时 60% 对应 21 只，所以 21 只上涨就命中。
+    """
+    br = {"up": 21, "down": 14, "flat": 0, "valid": 35}
+    assert mp.verdict(br, -0.5)[0] == "独跌"
+
+
+def test_verdict_flat_stock_is_mixed():
+    """个股正好平盘一律判分化，不进前三行。"""
+    br = {"up": 34, "down": 4, "flat": 0, "valid": 38}
+    assert mp.verdict(br, 0.0)[0] == "分化"
+
+
+def test_verdict_returns_none_when_sample_too_small():
+    """有效票不足 20 只不出判定。
+
+    只有 18 只返回而其中 12 只在涨，算出 67% 照样会打印「同涨」，
+    但另外 20 只的涨跌完全未知；若丢的恰好是 12 只科创板票，
+    剩下的池子就缺了半导体设备和晶圆制造，结论会系统性偏向剩余赛道。
+    这是方向性错误，不是精度问题。
+    """
+    br = {"up": 12, "down": 6, "flat": 0, "valid": 18}
+    got, why = mp.verdict(br, -1.2)
+    assert got is None
+    assert "样本不足" in why
+    assert "18" in why
+
+
+def test_verdict_note_mentions_ratio():
+    br = {"up": 34, "down": 4, "flat": 0, "valid": 38}
+    _, why = mp.verdict(br, 2.35)
+    assert "34/38" in why

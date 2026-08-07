@@ -95,3 +95,58 @@ def aggregate(values):
     if not valid:
         return None, 0
     return st.median(valid), len(valid)
+
+
+def breadth(rs_now, rs_past=None):
+    """涨跌家数与翻向数。
+
+    rs_now / rs_past 形如 {代码: 涨跌幅%}，值为 None 表示停牌，直接剔除。
+    平盘（r == 0）不算翻向——平盘不是一个方向。
+    """
+    up = down = flat = 0
+    for r in rs_now.values():
+        if r is None:
+            continue
+        if r > 0:
+            up += 1
+        elif r < 0:
+            down += 1
+        else:
+            flat += 1
+    flip_down = flip_up = 0
+    if rs_past:
+        for code, now in rs_now.items():
+            past = rs_past.get(code)
+            if now is None or past is None or now == 0 or past == 0:
+                continue
+            if past > 0 > now:
+                flip_down += 1
+            elif past < 0 < now:
+                flip_up += 1
+    return {"up": up, "down": down, "flat": flat, "valid": up + down + flat,
+            "flip_down": flip_down, "flip_up": flip_up}
+
+
+def verdict(br, r_stock):
+    """回答「是我独跌还是大家都跌」，返回 (判定, 说明)。
+
+    只用计数和比例，不设需要标定的速度阈值——15 秒粒度的历史分布还没积累出来，
+    在标定之前给「跌得快/慢」这类定性词是没有依据的。
+
+    比例的分母是有效票数不是固定的 38；正好等于 VERDICT_RATIO 算命中。
+    有效票少于 MIN_VALID 时返回 (None, 原因)。
+    """
+    valid = br["valid"]
+    if valid < MIN_VALID:
+        return None, f"样本不足（仅 {valid} 只有效，需 {MIN_VALID} 只）"
+    up_ratio = br["up"] / valid
+    down_ratio = br["down"] / valid
+    note = (f"池内 {br['up']}/{valid} 上涨（{up_ratio * 100:.0f}%）、"
+            f"{br['down']}/{valid} 下跌（{down_ratio * 100:.0f}%）")
+    if r_stock is None or r_stock == 0:
+        return "分化", note
+    if up_ratio >= VERDICT_RATIO:
+        return ("同涨" if r_stock > 0 else "独跌"), note
+    if down_ratio >= VERDICT_RATIO and r_stock < 0:
+        return "同跌", note
+    return "分化", note
