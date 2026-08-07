@@ -1570,6 +1570,38 @@ def test_parse_pool_quotes_drops_failed():
     assert set(mp.parse_pool_quotes(raw)) == {"c"}
 
 
+def test_parse_pool_quotes_rounds_r_once():
+    """涨跌幅在 parse_pool_quotes 一次性定死 3 位小数，下游不再各自舍入。
+
+    2026-08-07 实测踩到的坑：main() 落盘时 round(r,3)、live_r 用原始值，
+    同一只票在 store 和 live_r 里取值不同，rank 比较时把自己也数了进去。
+    """
+    raw = [{"code": "a", "current": 977.45, "prev_close": 955.0, "ok": True}]
+    assert mp.parse_pool_quotes(raw)["a"]["r"] == 2.351
+
+
+def test_rank_never_exceeds_pool_size():
+    """名次不能超过有效票数——防「排名 39/38（前 103%）」复现。"""
+    raw = 2.350785340314141
+    all_rs = [round(raw, 3)] + [1.0] * 37
+    place, total = mp.rank(round(raw, 3), all_rs)
+    assert place <= total
+    assert place == 1
+
+
+def test_build_state_rank_within_pool_size():
+    """组装出来的持仓名次不能超过有效票数。
+
+    这条走的是完整链路（store 里的 r 与 live_r 同源同精度），
+    是 39/38 那个 bug 的端到端守护。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
+    for h in st["holdings"]:
+        place, total = h["rank"]
+        if place is not None:
+            assert place <= total, f"{h['name']} 名次 {place}/{total} 越界"
+
+
 def test_now_bj_returns_beijing_not_local():
     """必须返回北京时间。
 
@@ -1715,7 +1747,11 @@ def parse_pool_quotes(raw_quotes):
         px, pc = q.get("current"), q.get("prev_close")
         if not px or not pc:
             continue
-        out[q["code"]] = {"r": (px - pc) / pc * 100, "px": px}
+        # 精度在这里一次性定死，下游不许再各自舍入。
+        # 2026-08-07 踩到：main() 落盘时 round(r,3)、live_r 用原始值，
+        # 于是持仓票自己的舍入值进了对比池，rank 拿原始值比较时把自己
+        # 也数了进去，面板出现「排名 39/38（前 103%）」。
+        out[q["code"]] = {"r": round((px - pc) / pc * 100, 3), "px": px}
     return out
 
 
@@ -1831,8 +1867,8 @@ def main():
     quotes = sw.fetch_quotes(codes)
     pool = parse_pool_quotes(quotes)
     snap = {"t": now.strftime(TS_FMT),
-            "r": {c: round(v["r"], 3) for c, v in pool.items() if c in POOL_CODES},
-            "idx": {c: round(v["r"], 3) for c, v in pool.items() if c in IDX_CODES}}
+            "r": {c: v["r"] for c, v in pool.items() if c in POOL_CODES},
+            "idx": {c: v["r"] for c, v in pool.items() if c in IDX_CODES}}
     append_store(snap)
     store = load_store(max(WINDOWS) * 2, now=now)
     live_r = {c: v["r"] for c, v in pool.items()}
@@ -1849,7 +1885,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 117 passed（以实测为准）
+Expected: 120 passed（以实测为准）
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1929,7 +1965,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 265 passed（以实测为准）
+Expected: 268 passed（以实测为准）
 
 - [ ] **Step 8: 提交**
 
@@ -2015,9 +2051,9 @@ Expected: FAIL 或 ERROR（`market_pulse` 尚未被 `stock_watch` 引用时，�
                 now = mp.now_bj()      # 必须用北京时间，本机是 JST 快 1 小时
                 pool = mp.parse_pool_quotes(quotes)
                 snap = {"t": now.strftime(mp.TS_FMT),
-                        "r": {c: round(v["r"], 3) for c, v in pool.items()
+                        "r": {c: v["r"] for c, v in pool.items()
                               if c in mp.POOL_CODES},
-                        "idx": {c: round(v["r"], 3) for c, v in pool.items()
+                        "idx": {c: v["r"] for c, v in pool.items()
                                 if c in mp.IDX_CODES}}
                 mp.append_store(snap)
                 store = mp.load_store(max(mp.WINDOWS) * 2, now=now)
