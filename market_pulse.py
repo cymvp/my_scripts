@@ -302,8 +302,21 @@ def _pad_r(s, width):
     return " " * max(0, width - display_width(s)) + s
 
 
-def _fmt_speed(v):
-    return "不可用" if v is None else f"{v:+.2f}"
+WINDOW_LABELS = {15: "15秒", 60: "1分钟", 300: "5分钟"}
+
+
+def _fmt_speed(v, dash=False):
+    """速度单元格。
+
+    两种 None 含义不同，必须分开显示：
+      dash=True  —— 这只票结构性地没有数据（池外持仓票不落盘），显示「—」
+      dash=False —— 有数据但这次取不到（采集未启动、窗口无快照），显示「不可用」
+    混成一种会让面板自相矛盾：同一只长鑫科技，速度栏说「不可用」暗示采集出了问题，
+    排名栏却说「不在池内」是结构性的。
+    """
+    if v is None:
+        return "—" if dash else "不可用"
+    return f"{v:+.2f}"
 
 
 def render_panel(state):
@@ -318,10 +331,12 @@ def render_panel(state):
 
     lines.append("【速度】单位 pp（该窗口内涨跌幅的变化量）")
     lines.append("  " + _pad_l("", 16)
-                 + "".join(_pad_r(f"{w}秒", 9) for w in WINDOWS))
+                 + "".join(_pad_r(WINDOW_LABELS[w], 9) for w in WINDOWS))
     for row in state["rows"]:
+        dash = row.get("dash", False)
         lines.append("  " + _pad_l(row["name"], 16)
-                     + "".join(_pad_r(_fmt_speed(v), 9) for v in row["speeds"]))
+                     + "".join(_pad_r(_fmt_speed(v, dash), 9)
+                               for v in row["speeds"]))
     if state["status"][0] != "ok":
         lines.append(f"  {state['status'][1]}")
     lines.append("")
