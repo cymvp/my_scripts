@@ -493,3 +493,132 @@ def test_store_status_ok():
              {"t": "2026-08-07 13:25:00", "r": {}, "idx": {}}]
     got, _ = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
     assert got == "ok"
+
+
+# --- 渲染 -----------------------------------------------------------------
+
+def test_display_width_mixes_cjk_and_ascii():
+    assert mp.display_width("abc") == 3
+    assert mp.display_width("中际旭创") == 8
+    assert mp.display_width("池+1.66%") == 8      # 1 个中文(2) + 6 个 ASCII(6)
+
+
+@pytest.mark.parametrize("s,width", [
+    ("中际旭创", 16), ("MLCC(2只)", 16), ("AI算力芯片(3只)", 16), ("", 16),
+])
+def test_pad_l_aligns_by_display_width(s, width):
+    """按显示宽度补齐，不是按码点。
+
+    真实赛道名的中文字数差很多——MLCC(2只) 只有 1 个中文、
+    AI算力芯片(3只) 有 5 个。按码点补齐会让面板右缘参差 17 到 22 不等，
+    而这个面板的全部价值就是一眼看懂。
+    """
+    assert mp.display_width(mp._pad_l(s, width)) == width
+
+
+def test_pad_r_aligns_by_display_width():
+    assert mp.display_width(mp._pad_r("15秒", 9)) == 9
+    assert mp.display_width(mp._pad_r("-0.21", 9)) == 9
+
+
+def test_pad_does_not_truncate_when_too_long():
+    """超长不截断——截断会把股票名切掉，宁可这一行歪掉。"""
+    assert mp._pad_l("中际旭创国际复材长鑫科技", 8) == "中际旭创国际复材长鑫科技"
+
+
+def _state(**over):
+    """构造一个数据齐全的 state，测试按需覆盖字段。"""
+    base = {
+        "ts": "2026-08-07 13:24:15",
+        "valid": 38, "total": 38,
+        "status": ("ok", ""),
+        "rows": [
+            {"name": "中际旭创", "speeds": [-0.21, -0.55, -1.32]},
+            {"name": "国际复材", "speeds": [0.30, 0.81, 2.10]},
+            {"name": "长鑫科技", "speeds": [None, None, None]},
+            {"name": "光模块(3只)", "speeds": [-0.15, -0.41, -0.98]},
+            {"name": "电子布(3只)", "speeds": [0.22, 0.65, 1.80]},
+            {"name": "科技池(38只)", "speeds": [-0.08, -0.22, -0.51]},
+            {"name": "创业板指", "speeds": [-0.04, -0.13, -0.30]},
+        ],
+        "breadth": {"up": 34, "down": 4, "flat": 0, "valid": 38,
+                    "flip_down": 3, "flip_up": 0},
+        "holdings": [
+            {"name": "中际旭创", "r": 2.35, "excess": 0.69, "rank": (17, 38),
+             "in_pool": True},
+            {"name": "国际复材", "r": 7.24, "excess": 5.58, "rank": (4, 38),
+             "in_pool": True},
+            {"name": "长鑫科技", "r": -0.17, "excess": -1.83, "rank": (None, 38),
+             "in_pool": False},
+        ],
+        "verdict": ("同涨", "池内 34/38 上涨（89%）、4/38 下跌（11%）"),
+        "pool_median": 1.66,
+        "dropped": 0,
+    }
+    base.update(over)
+    return base
+
+
+def test_render_panel_has_all_three_blocks():
+    out = mp.render_panel(_state())
+    assert "【速度】" in out and "【宽度】" in out and "【相对强弱】" in out
+    assert "【判定】" in out
+
+
+def test_render_panel_shows_speed_numbers():
+    out = mp.render_panel(_state())
+    assert "-0.21" in out and "-1.32" in out
+
+
+def test_render_panel_shows_unavailable_instead_of_numbers():
+    """采集没运行时，速度栏出现「不可用」且不出现任何速度数字。"""
+    st = _state(status=("not_running", "不可用（悬浮窗未启动）"),
+                rows=[{"name": "中际旭创", "speeds": [None, None, None]}])
+    out = mp.render_panel(st)
+    assert "不可用" in out
+    assert "-0.21" not in out
+
+
+def test_render_panel_shows_sample_too_small():
+    st = _state(valid=18, verdict=(None, "样本不足（仅 18 只有效，需 20 只）"))
+    out = mp.render_panel(st)
+    assert "样本不足" in out
+
+
+def test_render_panel_reports_dropped_lines():
+    out = mp.render_panel(_state(dropped=3))
+    assert "跳过 3 行损坏记录" in out
+
+
+def test_render_panel_shows_dash_for_pool_outsider():
+    """长鑫科技不在 38 只池内：速度栏是 —，排名标「不在池内」。"""
+    out = mp.render_panel(_state())
+    assert "长鑫科技" in out
+    assert "不在池内" in out
+
+
+def test_render_panel_has_sector_and_index_rows():
+    """面板速度栏固定顺序：持仓票 → 赛道 → 科技池 → 创业板指。"""
+    out = mp.render_panel(_state())
+    for name in ("光模块(3只)", "电子布(3只)", "科技池(38只)", "创业板指"):
+        assert name in out
+
+
+def test_render_strip_within_width_limit():
+    """悬浮窗横条空间有限，上限 40 个显示宽度单位。"""
+    out = mp.render_strip(_state())
+    assert mp.display_width(out) <= 40
+
+
+def test_render_strip_contains_verdict_and_rank():
+    out = mp.render_strip(_state())
+    assert "同涨" in out
+    assert "17/38" in out
+
+
+def test_render_strip_when_unavailable():
+    st = _state(status=("not_running", "不可用（悬浮窗未启动）"),
+                verdict=(None, "样本不足（仅 18 只有效，需 20 只）"))
+    out = mp.render_strip(st)
+    assert "不可用" in out or "样本不足" in out
+    assert mp.display_width(out) <= 40

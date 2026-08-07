@@ -8,6 +8,7 @@ import datetime
 import json
 import os
 import statistics as st
+import unicodedata
 
 import intraday_guide as ig
 
@@ -284,3 +285,89 @@ def store_status(store, now):
     if span < longest:
         return "warming_up", f"不可用（已采集 {span:.0f} 秒，需 {longest} 秒）"
     return "ok", ""
+
+
+def display_width(s):
+    """终端显示宽度：全角/宽字符计 2，其余计 1。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+
+
+def _pad_l(s, width):
+    """按显示宽度左对齐补空格（中文计 2）。超长不截断——截断会把股票名切掉。"""
+    return s + " " * max(0, width - display_width(s))
+
+
+def _pad_r(s, width):
+    """按显示宽度右对齐补空格。"""
+    return " " * max(0, width - display_width(s)) + s
+
+
+def _fmt_speed(v):
+    return "不可用" if v is None else f"{v:+.2f}"
+
+
+def render_panel(state):
+    """命令行完整面板。state 的结构见 test_market_pulse._state()。
+
+    所有列都用 _pad_l / _pad_r 按显示宽度对齐，不能用 ljust/rjust——
+    那两个按码点补齐，而赛道名的中文字数差很多（MLCC(2只) 1 个中文、
+    AI算力芯片(3只) 5 个），按码点补会让右缘参差。
+    """
+    lines = [f"【市场脉搏 {state['ts']}】采样 3 秒 · 池内有效 "
+             f"{state['valid']}/{state['total']}", ""]
+
+    lines.append("【速度】单位 pp（该窗口内涨跌幅的变化量）")
+    lines.append("  " + _pad_l("", 16)
+                 + "".join(_pad_r(f"{w}秒", 9) for w in WINDOWS))
+    for row in state["rows"]:
+        lines.append("  " + _pad_l(row["name"], 16)
+                     + "".join(_pad_r(_fmt_speed(v), 9) for v in row["speeds"]))
+    if state["status"][0] != "ok":
+        lines.append(f"  {state['status'][1]}")
+    lines.append("")
+
+    br = state["breadth"]
+    lines.append("【宽度】")
+    lines.append(f"  池内 上涨 {br['up']} / 平盘 {br['flat']} / 下跌 {br['down']}")
+    lines.append(f"  最近 1 分钟翻向：涨转跌 {br['flip_down']} 只，"
+                 f"跌转涨 {br['flip_up']} 只")
+    lines.append("")
+
+    lines.append("【相对强弱】")
+    for h in state["holdings"]:
+        place, total = h["rank"]
+        if place is None:
+            pos = "—（不在池内）" if not h.get("in_pool", True) else "—"
+        else:
+            pos = f"{place}/{total}（前 {place / total * 100:.0f}%）"
+        exc = "—" if h["excess"] is None else f"{h['excess']:+.2f}pp"
+        r_txt = "—" if h["r"] is None else f"{h['r']:+.2f}%"
+        lines.append("  " + _pad_l(h["name"], 10) + _pad_r(r_txt, 9)
+                     + "  超额(vs池) " + _pad_r(exc, 9) + "  排名 " + pos)
+    lines.append("")
+
+    got, why = state["verdict"]
+    lines.append(f"【判定】{why}" if got is None else f"【判定】{got} —— {why}")
+    if state.get("dropped"):
+        lines.append(f"  跳过 {state['dropped']} 行损坏记录")
+    return "\n".join(lines)
+
+
+def render_strip(state):
+    """悬浮窗单行文案，显示宽度不超过 40。
+
+    速度三窗放不进一行，只在命令行面板出现。超限时优先砍池子涨跌幅，
+    保留判定和排名——那两个才是「要不要紧」的直接答案。
+    """
+    got, _ = state["verdict"]
+    if got is None:
+        return "样本不足" if state["status"][0] == "ok" else "行情不可用"
+    br = state["breadth"]
+    h = state["holdings"][0] if state["holdings"] else None
+    if h is None:
+        return f"池{state['pool_median']:+.2f}% {br['up']}/{br['down']} {got}"
+    place, total = h["rank"]
+    tail = (f"你{h['excess']:+.2f}pp {place}/{total} {got}"
+            if h["excess"] is not None and place else f"你 — {got}")
+    full = f"池{state['pool_median']:+.2f}% {br['up']}/{br['down']}  {tail}"
+    return full if display_width(full) <= 40 else tail
