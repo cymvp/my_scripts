@@ -105,3 +105,63 @@ def test_in_session_rejects_garbage():
     """格式不对直接抛，不静默返回 False——那会让采集悄悄停掉。"""
     with pytest.raises(ValueError):
         mp.in_session("abc")
+
+
+# --- speed 速度 ------------------------------------------------------------
+
+def test_speed_normal():
+    """13:24:00 价 979.00（r=+2.51%），13:24:15 价 977.00（r=+2.30%）。
+
+    v = 2.30 − 2.51 = −0.21 百分点，读作「最近 15 秒涨跌幅掉了 0.21 个百分点」。
+    """
+    assert mp.speed(2.30, 2.51) == pytest.approx(-0.21)
+
+
+def test_speed_zero_when_unchanged():
+    assert mp.speed(2.30, 2.30) == 0.0
+
+
+def test_speed_returns_none_when_past_missing():
+    """缺历史返回 None，不返回 0——0 会被读成「没动」，那是完全不同的意思。"""
+    assert mp.speed(2.30, None) is None
+
+
+def test_speed_returns_none_when_now_missing():
+    assert mp.speed(None, 2.51) is None
+
+
+# --- aggregate 中位数聚合 --------------------------------------------------
+
+def test_aggregate_odd_count():
+    assert mp.aggregate([-0.5, -0.1, 2.0]) == (pytest.approx(-0.1), 3)
+
+
+def test_aggregate_even_count():
+    """偶数个取中间两个的均值。"""
+    val, n = mp.aggregate([-0.4, -0.2, 0.1, 0.3])
+    assert val == pytest.approx(-0.05)
+    assert n == 4
+
+
+def test_aggregate_drops_none():
+    val, n = mp.aggregate([-0.5, None, -0.1])
+    assert val == pytest.approx(-0.3)
+    assert n == 2
+
+
+def test_aggregate_all_none():
+    assert mp.aggregate([None, None]) == (None, 0)
+
+
+def test_aggregate_empty():
+    assert mp.aggregate([]) == (None, 0)
+
+
+def test_aggregate_uses_median_not_mean():
+    """必须是中位数。
+
+    2026-08-07 实测：PCB/覆铜板赛道中位 +7.62%、MLCC 只有 +0.39%，
+    平均数会被少数暴涨票拉偏。
+    """
+    val, _ = mp.aggregate([0.1, 0.1, 0.1, 20.0])
+    assert val == pytest.approx(0.1)      # 中位数 0.1；平均数会是 5.075

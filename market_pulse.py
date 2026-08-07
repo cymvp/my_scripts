@@ -5,6 +5,7 @@
 只描述已经发生的涨跌，不做方向预测。
 """
 import os
+import statistics as st
 
 import intraday_guide as ig
 
@@ -69,3 +70,28 @@ def in_session(hhmm):
     except ValueError:
         raise ValueError(f"时间格式不对: {hhmm!r}") from None
     return any(lo <= minutes <= hi for lo, hi in SESSIONS)
+
+
+def speed(r_now, r_past):
+    """速度 = 涨跌幅之差，单位百分点(pp)。
+
+    用涨跌幅之差而不是价格变化率，是为了让 977 元的中际旭创和 38 元的
+    国际复材能放进同一张表比较。
+
+    任一端缺数据返回 None，不返回 0——0 表示「没动」，和「不知道」是两回事。
+    """
+    if r_now is None or r_past is None:
+        return None
+    return r_now - r_past
+
+
+def aggregate(values):
+    """一组速度或涨跌幅取中位数，返回 (中位数, 有效数)。
+
+    用中位数不用平均数：池子里有涨停跌停的极端票，平均数会被拉偏。
+    有效数一起返回，让上层能判断样本够不够（见 MIN_VALID）。
+    """
+    valid = [v for v in values if v is not None]
+    if not valid:
+        return None, 0
+    return st.median(valid), len(valid)
