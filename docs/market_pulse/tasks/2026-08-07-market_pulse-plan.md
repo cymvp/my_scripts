@@ -1208,7 +1208,30 @@ git commit -m "feat(market_pulse): 快照落盘、跨日清理与三种不可用
 def test_display_width_mixes_cjk_and_ascii():
     assert mp.display_width("abc") == 3
     assert mp.display_width("中际旭创") == 8
-    assert mp.display_width("池+1.66%") == 9      # 1 个中文 + 7 个 ASCII
+    assert mp.display_width("池+1.66%") == 8      # 1 个中文(2) + 6 个 ASCII(6)
+
+
+@pytest.mark.parametrize("s,width", [
+    ("中际旭创", 16), ("MLCC(2只)", 16), ("AI算力芯片(3只)", 16), ("", 16),
+])
+def test_pad_l_aligns_by_display_width(s, width):
+    """按显示宽度补齐，不是按码点。
+
+    真实赛道名的中文字数差很多——MLCC(2只) 只有 1 个中文、
+    AI算力芯片(3只) 有 5 个。按码点补齐会让面板右缘参差 17 到 22 不等，
+    而这个面板的全部价值就是一眼看懂。
+    """
+    assert mp.display_width(mp._pad_l(s, width)) == width
+
+
+def test_pad_r_aligns_by_display_width():
+    assert mp.display_width(mp._pad_r("15秒", 9)) == 9
+    assert mp.display_width(mp._pad_r("-0.21", 9)) == 9
+
+
+def test_pad_does_not_truncate_when_too_long():
+    """超长不截断——截断会把股票名切掉，宁可这一行歪掉。"""
+    assert mp._pad_l("中际旭创国际复材长鑫科技", 8) == "中际旭创国际复材长鑫科技"
 
 
 def _state(**over):
@@ -1327,20 +1350,36 @@ def display_width(s):
     return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
 
 
+def _pad_l(s, width):
+    """按显示宽度左对齐补空格（中文计 2）。超长不截断——截断会把股票名切掉。"""
+    return s + " " * max(0, width - display_width(s))
+
+
+def _pad_r(s, width):
+    """按显示宽度右对齐补空格。"""
+    return " " * max(0, width - display_width(s)) + s
+
+
 def _fmt_speed(v):
-    return "  不可用" if v is None else f"{v:+7.2f}"
+    return "不可用" if v is None else f"{v:+.2f}"
 
 
 def render_panel(state):
-    """命令行完整面板。state 的结构见 test_market_pulse._state()。"""
+    """命令行完整面板。state 的结构见 test_market_pulse._state()。
+
+    所有列都用 _pad_l / _pad_r 按显示宽度对齐，不能用 ljust/rjust——
+    那两个按码点补齐，而赛道名的中文字数差很多（MLCC(2只) 1 个中文、
+    AI算力芯片(3只) 5 个），按码点补会让右缘参差。
+    """
     lines = [f"【市场脉搏 {state['ts']}】采样 3 秒 · 池内有效 "
              f"{state['valid']}/{state['total']}", ""]
 
     lines.append("【速度】单位 pp（该窗口内涨跌幅的变化量）")
-    lines.append(f"  {'':<16}" + "".join(f"{w}秒".rjust(9) for w in WINDOWS))
+    lines.append("  " + _pad_l("", 16)
+                 + "".join(_pad_r(f"{w}秒", 9) for w in WINDOWS))
     for row in state["rows"]:
-        lines.append(f"  {row['name']:<16}"
-                     + "".join(_fmt_speed(v).rjust(9) for v in row["speeds"]))
+        lines.append("  " + _pad_l(row["name"], 16)
+                     + "".join(_pad_r(_fmt_speed(v), 9) for v in row["speeds"]))
     if state["status"][0] != "ok":
         lines.append(f"  {state['status'][1]}")
     lines.append("")
@@ -1360,8 +1399,9 @@ def render_panel(state):
         else:
             pos = f"{place}/{total}（前 {place / total * 100:.0f}%）"
         exc = "—" if h["excess"] is None else f"{h['excess']:+.2f}pp"
-        r_txt = "   —   " if h["r"] is None else f"{h['r']:+7.2f}%"
-        lines.append(f"  {h['name']:<10}{r_txt}  超额(vs池) {exc}  排名 {pos}")
+        r_txt = "—" if h["r"] is None else f"{h['r']:+.2f}%"
+        lines.append("  " + _pad_l(h["name"], 10) + _pad_r(r_txt, 9)
+                     + "  超额(vs池) " + _pad_r(exc, 9) + "  排名 " + pos)
     lines.append("")
 
     got, why = state["verdict"]
@@ -1397,7 +1437,7 @@ def render_strip(state):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 94 passed
+Expected: 98 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1658,7 +1698,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 103 passed
+Expected: 107 passed
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1738,7 +1778,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 251 passed（原有 148 + 新增 103）
+Expected: 255 passed（原有 148 + 新增 107）
 
 - [ ] **Step 8: 提交**
 
