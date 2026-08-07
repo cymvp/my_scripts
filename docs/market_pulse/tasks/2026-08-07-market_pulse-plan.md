@@ -334,7 +334,7 @@ def in_session(hhmm):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 26 passed
+Expected: 25 passed
 
 - [ ] **Step 5: 提交**
 
@@ -466,7 +466,7 @@ def aggregate(values):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 36 passed
+Expected: 35 passed
 
 - [ ] **Step 5: 提交**
 
@@ -681,7 +681,7 @@ def verdict(br, r_stock):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 52 passed
+Expected: 51 passed
 
 - [ ] **Step 5: 提交**
 
@@ -803,7 +803,7 @@ def rank(r_stock, all_rs):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 62 passed
+Expected: 61 passed
 
 - [ ] **Step 5: 提交**
 
@@ -939,7 +939,7 @@ def pick_snapshot(store, target, tol_sec):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 71 passed
+Expected: 70 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1171,7 +1171,7 @@ def store_status(store, now):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 85 passed
+Expected: 84 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1397,7 +1397,7 @@ def render_strip(state):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 97 passed
+Expected: 96 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1658,7 +1658,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 106 passed
+Expected: 105 passed
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1738,7 +1738,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 254 passed（原有 148 + 新增 106）
+Expected: 253 passed（原有 148 + 新增 105）
 
 - [ ] **Step 8: 提交**
 
