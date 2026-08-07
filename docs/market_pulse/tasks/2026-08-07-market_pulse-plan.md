@@ -1108,7 +1108,7 @@ def load_store(seconds, now=None, path=STORE):
     """
     if not os.path.exists(path):
         return []
-    now = now or datetime.datetime.now()
+    now = now or now_bj()      # 必须北京时间，本机是 JST 快 1 小时
     cutoff = now - datetime.timedelta(seconds=seconds)
     out = []
     with open(path, encoding="utf-8") as fh:
@@ -1570,6 +1570,33 @@ def test_parse_pool_quotes_drops_failed():
     assert set(mp.parse_pool_quotes(raw)) == {"c"}
 
 
+def test_now_bj_returns_beijing_not_local():
+    """必须返回北京时间。
+
+    2026-08-07 实测：本机时区是 JST，比北京快 1 小时。若用本机时间
+    比对 A 股时段，12 个时点里错 8 个——误采盘前，且尾盘一小时全漏。
+    """
+    import zoneinfo
+    expect = datetime.datetime.now(
+        zoneinfo.ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    assert abs((mp.now_bj() - expect).total_seconds()) < 5
+
+
+def test_now_bj_is_naive():
+    """去掉 tzinfo，好和落盘的 naive 时间戳直接相减。"""
+    assert mp.now_bj().tzinfo is None
+
+
+def test_in_session_boundary_is_beijing_clock():
+    """时区 bug 的回归守护。
+
+    北京 14:59 在场内、15:59 不在。本机 JST 下北京 14:59 就是本机 15:59，
+    若误用本机时间会把尾盘整整一小时判成盘后、全部漏采。
+    """
+    assert mp.in_session("14:59") is True
+    assert mp.in_session("15:59") is False
+
+
 def test_parse_pool_quotes_uses_stock_watch_field_names():
     """入参字段名必须和 stock_watch.parse_sina_response 的真实输出一致。
 
@@ -1665,7 +1692,7 @@ Expected: FAIL，`AttributeError: module 'market_pulse' has no attribute 'parse_
 
 - [ ] **Step 3: 写最小实现**
 
-追加到 `market_pulse.py`：
+在 `market_pulse.py` 顶部 import 区加 `import zoneinfo`，然后追加：
 
 ```python
 def parse_pool_quotes(raw_quotes):
@@ -1776,11 +1803,29 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
             "pool_median": pool_median, "dropped": 0}
 
 
+MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
+
+
+def now_bj():
+    """当前北京时间，去掉 tzinfo 以便与落盘的时间戳字符串直接比较。
+
+    2026-08-07 实测踩到的坑：本机时区是 JST，比北京快 1 小时。
+    用 datetime.datetime.now() 取本机时间去比对 A 股时段，12 个时点里错 8 个——
+    误采北京 08:30-09:29 的盘前，漏采 10:31-11:30 和 14:01-15:00 两段，
+    尾盘整整一小时全丢，而那正是最需要看盘的时段。
+
+    仓库里 intraday_guide.py:203 和 intraday_collector.py:52 早就定了
+    MARKET_TZ 这个约定，这里对齐它。所有取"现在"的地方都必须走这个函数，
+    不许直接调 datetime.datetime.now()。
+    """
+    return datetime.datetime.now(MARKET_TZ).replace(tzinfo=None)
+
+
 def main():
     """命令行入口：读盘、组装、打印完整面板。"""
     import stock_watch as sw
 
-    now = datetime.datetime.now()
+    now = now_bj()
     rotate_store(now.strftime("%Y-%m-%d"))
     codes = merge_codes(sw.load_config())
     quotes = sw.fetch_quotes(codes)
@@ -1804,7 +1849,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 114 passed（以实测为准）
+Expected: 117 passed（以实测为准）
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1884,7 +1929,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 262 passed（原有 148 + 新增 114，以实测为准）
+Expected: 265 passed（以实测为准）
 
 - [ ] **Step 8: 提交**
 
@@ -1950,7 +1995,7 @@ Expected: FAIL 或 ERROR（`market_pulse` 尚未被 `stock_watch` 引用时，�
             # --- 市场脉搏（见 docs/market_pulse/spec/）---
             self.pulse_text = None      # 横条末尾那个格子的标签
             self._pulse_strip = ""      # 最近一次算出来的单行文案
-            mp.rotate_store(datetime.datetime.now().strftime("%Y-%m-%d"))
+            mp.rotate_store(mp.now_bj().strftime("%Y-%m-%d"))
 ```
 
 在 `_render_rows()` 的末尾（`minus.pack(...)` 之后）加：
@@ -1967,7 +2012,7 @@ Expected: FAIL 或 ERROR（`market_pulse` 尚未被 `stock_watch` 引用时，�
         def _pulse_tick(self, quotes):
             """把池子部分落盘并重算单行文案。任何异常都不能影响自选渲染。"""
             try:
-                now = datetime.datetime.now()
+                now = mp.now_bj()      # 必须用北京时间，本机是 JST 快 1 小时
                 pool = mp.parse_pool_quotes(quotes)
                 snap = {"t": now.strftime(mp.TS_FMT),
                         "r": {c: round(v["r"], 3) for c, v in pool.items()
