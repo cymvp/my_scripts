@@ -686,3 +686,111 @@ def test_render_strip_when_unavailable():
     out = mp.render_strip(st)
     assert "不可用" in out or "样本不足" in out
     assert mp.display_width(out) <= 40
+
+
+# --- parse_pool_quotes / build_state --------------------------------------
+
+def test_parse_pool_quotes_computes_r():
+    raw = [{"code": "sz300308", "current": 977.45, "prev_close": 955.0, "ok": True}]
+    got = mp.parse_pool_quotes(raw)
+    assert got["sz300308"]["r"] == pytest.approx(2.3508, abs=1e-3)
+
+
+def test_parse_pool_quotes_drops_suspended():
+    """停牌（现价为 0）和昨收为 0 的票直接剔除，不列名、不提示。"""
+    raw = [{"code": "a", "current": 0.0, "prev_close": 10.0, "ok": True},
+           {"code": "b", "current": 10.0, "prev_close": 0.0, "ok": True},
+           {"code": "c", "current": 11.0, "prev_close": 10.0, "ok": True}]
+    got = mp.parse_pool_quotes(raw)
+    assert set(got) == {"c"}
+
+
+def test_parse_pool_quotes_drops_failed():
+    raw = [{"code": "a", "current": None, "prev_close": None, "ok": False},
+           {"code": "c", "current": 11.0, "prev_close": 10.0, "ok": True}]
+    assert set(mp.parse_pool_quotes(raw)) == {"c"}
+
+
+def test_parse_pool_quotes_uses_stock_watch_field_names():
+    """入参字段名必须和 stock_watch.parse_sina_response 的真实输出一致。
+
+    2026-08-07 踩过的坑：计划里写的入参键是 px，而真实字段是 current
+    （stock_watch.py:75-78）。单测因为用自造数据而自洽通过，真跑起来
+    每只票的 current 都取不到、整批被剔除，池子全空、判定全废。
+    这条测试直接拿 parse_sina_response 的真实输出当输入，把契约钉死。
+    """
+    import stock_watch as sw
+    raw = ('var hq_str_sz300308="中际旭创,981.09,955.00,977.45,999.88,963.00,'
+           '977.40,977.45,20098011,19775573459,' + ','.join(["0"] * 20) + '";')
+    got = mp.parse_pool_quotes(sw.parse_sina_response(raw))
+    assert "sz300308" in got, "字段名对不上，真实行情会被整批剔除"
+    assert got["sz300308"]["r"] == pytest.approx(2.3508, abs=1e-3)
+    assert got["sz300308"]["px"] == pytest.approx(977.45)
+
+
+def test_build_state_marks_all_windows_unavailable_when_not_running():
+    """采集没跑起来时，三个窗口全部 None，不用任何别的数据源凑。"""
+    st = mp.build_state([], mp.parse_ts("2026-08-07 13:25:00"), holdings=["sz300308"])
+    assert st["status"][0] == "not_running"
+    for row in st["rows"]:
+        assert row["speeds"] == [None, None, None]
+
+
+def _two_snaps():
+    """构造两条快照：13:24:00 和 13:24:15，中际旭创从 +2.51 掉到 +2.30。"""
+    pool = {c: 1.0 for c in mp.POOL_CODES}
+    a = dict(pool, sz300308=2.51, sz301526=7.00)
+    b = dict(pool, sz300308=2.30, sz301526=7.24)
+    return [{"t": "2026-08-07 13:24:00", "r": a, "idx": {"sz399006": 1.70}},
+            {"t": "2026-08-07 13:24:15", "r": b, "idx": {"sz399006": 1.75}}]
+
+
+def test_build_state_rows_in_spec_order():
+    """行顺序：持仓票（3 行）→ 赛道（2 行）→ 科技池 → 创业板指 = 7 行。
+
+    长鑫科技不在 SECTOR 里，不产生赛道行。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    names = [r["name"] for r in st["rows"]]
+    assert names[:3] == ["中际旭创", "国际复材", "长鑫科技"]
+    assert names[3].startswith("光模块") and names[4].startswith("电子布")
+    assert names[5].startswith("科技池")
+    assert names[6] == "创业板指"
+
+
+def test_build_state_computes_15s_speed():
+    """15 秒窗口：中际旭创从 +2.51 掉到 +2.30，速度 −0.21 pp。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
+    assert st["rows"][0]["speeds"][0] == pytest.approx(-0.21)
+
+
+def test_build_state_pool_outsider_has_no_speed():
+    """长鑫科技不落盘，三个窗口全是 None。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    assert st["rows"][2]["speeds"] == [None, None, None]
+
+
+def test_build_state_pool_outsider_still_gets_excess():
+    """长鑫的相对强弱用实时行情出数，但排名为 None（不在池内）。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    cx = [h for h in st["holdings"] if h["name"] == "长鑫科技"][0]
+    assert cx["r"] == pytest.approx(-0.17)
+    assert cx["excess"] is not None
+    assert cx["rank"][0] is None
+    assert cx["in_pool"] is False
+
+
+def test_build_state_breadth_uses_r_not_price():
+    """宽度必须基于涨跌幅。
+
+    2026-08-07 设计评审发现的缺陷：落盘若存价格，价格永远为正，
+    上涨家数会恒等于 38。这条测试就是那个 bug 的守门人。
+    """
+    snaps = _two_snaps()
+    snaps[-1]["r"]["sz300502"] = -3.0
+    st = mp.build_state(snaps, mp.parse_ts("2026-08-07 13:24:15"))
+    assert st["breadth"]["down"] >= 1
+    assert st["breadth"]["up"] < len(mp.POOL_CODES)

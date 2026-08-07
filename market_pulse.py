@@ -386,3 +386,133 @@ def render_strip(state):
             if h["excess"] is not None and place else f"你 — {got}")
     full = f"池{state['pool_median']:+.2f}% {br['up']}/{br['down']}  {tail}"
     return full if display_width(full) <= 40 else tail
+
+
+def parse_pool_quotes(raw_quotes):
+    """把 stock_watch.fetch_quotes 的返回转成 {代码: {"r": 涨跌幅%, "px": 现价}}。
+
+    入参的字段名是 current / prev_close，那是 stock_watch.parse_sina_response
+    的输出（stock_watch.py:75-78），只在 len(fields) > 9 时才附上；报文太短
+    （停牌、未开盘）时这两个键不存在，get 返回 None 会被下面剔除。
+    输出侧用 px 这个键名，那是本模块自己的形状。
+
+    这里从原始现价与昨收重算涨跌幅，不用 stock_watch 现成的 change_pct——
+    后者四舍五入到两位，速度是两个涨跌幅之差，精度损失会被放大。
+
+    停牌（现价为 0）和昨收为 0 的票直接剔除，不列名、不提示。
+    """
+    out = {}
+    for q in raw_quotes:
+        if not q.get("ok"):
+            continue
+        px, pc = q.get("current"), q.get("prev_close")
+        if not px or not pc:
+            continue
+        out[q["code"]] = {"r": (px - pc) / pc * 100, "px": px}
+    return out
+
+
+def _speeds_for(store, now, key_fn):
+    """对每个窗口算一次速度。key_fn(snapshot) 返回该快照对应的涨跌幅。
+
+    key_fn 返回 None（该票没落盘，例如池外的长鑫科技）时，速度也是 None，
+    面板渲染成「—」。
+    """
+    out = []
+    now_snap = store[-1] if store else None
+    for w in WINDOWS:
+        if now_snap is None:
+            out.append(None)
+            continue
+        past = pick_snapshot(store, now - datetime.timedelta(seconds=w),
+                             window_tolerance(w))
+        out.append(speed(key_fn(now_snap), key_fn(past) if past else None))
+    return out
+
+
+def _sector_key(snap, codes):
+    """一个赛道在某条快照上的中位涨跌幅。"""
+    return aggregate([snap["r"].get(c) for c in codes])[0]
+
+
+def build_state(store, now, holdings=HOLD_CODES, live_r=None):
+    """组装 render_panel / render_strip 需要的 state。
+
+    store 为空或过期时三个窗口全部返回 None——不用任何别的粒度的数据源凑。
+
+    live_r 是当次实时行情的 {代码: 涨跌幅}，用来给池外持仓票（长鑫科技）
+    出「相对强弱」那一节的数字。它不落盘，所以速度栏是 None。
+    """
+    status = store_status(store, now)
+    cur = store[-1]["r"] if store else {}
+    rs_now = {c: v for c, v in cur.items() if v is not None}
+    br = breadth(rs_now)
+    pool_median, valid = aggregate(list(rs_now.values()))
+    live_r = live_r or dict(rs_now)
+
+    rows = []
+    # 一、每只持仓票各一行
+    for code in holdings:
+        rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
+                     # 池外票不落盘，速度是结构性缺失，渲染成「—」不是「不可用」
+                     "dash": code not in POOL_CODES,
+                     "speeds": _speeds_for(store, now,
+                                           lambda s, c=code: s["r"].get(c))})
+    # 二、持仓票所属赛道各一行，同赛道只出一次，池外票没有赛道直接跳过
+    seen_sectors = []
+    for code in holdings:
+        sec = ig.SECTOR.get(code)
+        if sec and sec not in seen_sectors:
+            seen_sectors.append(sec)
+    for sec in seen_sectors:
+        members = [c for c, s in ig.SECTOR.items() if s == sec]
+        rows.append({"name": f"{sec}({len(members)}只)",
+                     "speeds": _speeds_for(store, now,
+                                           lambda s, m=members: _sector_key(s, m))})
+    # 三、科技池
+    rows.append({"name": f"科技池({valid}只)",
+                 "speeds": _speeds_for(
+                     store, now,
+                     lambda s: aggregate(list(s["r"].values()))[0])})
+    # 四、创业板指
+    rows.append({"name": IDX_NAMES["sz399006"],
+                 "speeds": _speeds_for(store, now,
+                                       lambda s: s["idx"].get("sz399006"))})
+
+    hold_rows = []
+    all_rs = list(rs_now.values())
+    for code in holdings:
+        r = live_r.get(code)
+        place, total = (rank(r, all_rs) if code in POOL_CODES else (None, len(all_rs)))
+        hold_rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
+                          "r": r, "excess": excess(r, pool_median),
+                          "rank": (place, total),
+                          "in_pool": code in POOL_CODES})
+
+    first = live_r.get(holdings[0]) if holdings else None
+    return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
+            "status": status, "rows": rows, "breadth": br,
+            "holdings": hold_rows, "verdict": verdict(br, first),
+            "pool_median": pool_median, "dropped": 0}
+
+
+def main():
+    """命令行入口：读盘、组装、打印完整面板。"""
+    import stock_watch as sw
+
+    now = datetime.datetime.now()
+    rotate_store(now.strftime("%Y-%m-%d"))
+    codes = merge_codes(sw.load_config())
+    quotes = sw.fetch_quotes(codes)
+    pool = parse_pool_quotes(quotes)
+    snap = {"t": now.strftime(TS_FMT),
+            "r": {c: round(v["r"], 3) for c, v in pool.items() if c in POOL_CODES},
+            "idx": {c: round(v["r"], 3) for c, v in pool.items() if c in IDX_CODES}}
+    append_store(snap)
+    store = load_store(max(WINDOWS) * 2, now=now)
+    live_r = {c: v["r"] for c, v in pool.items()}
+    print(render_panel(build_state(store, now, live_r=live_r)))
+
+
+if __name__ == "__main__":
+    main()
