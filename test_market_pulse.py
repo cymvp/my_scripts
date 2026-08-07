@@ -52,28 +52,6 @@ def test_merge_codes_real_sizes():
     assert len(set(out)) == 45
 
 
-# --- split_result 分拣 -----------------------------------------------------
-
-def test_split_result_separates_watch_and_pool():
-    """重叠的票要同时出现在两边，不是二选一。"""
-    quotes = {"sz300308": {"r": 2.35}, "sh601288": {"r": -0.4},
-              "sz300502": {"r": 5.96}, "sz399006": {"r": 1.75}}
-    watch_part, pool_part = mp.split_result(
-        quotes, watch=["sz300308", "sh601288"], pool=("sz300308", "sz300502"))
-    assert set(watch_part) == {"sz300308", "sh601288"}
-    assert set(pool_part) == {"sz300308", "sz300502"}
-    assert watch_part["sz300308"] is pool_part["sz300308"]
-
-
-def test_split_result_ignores_missing():
-    """请求里有、返回里没有的代码，两边都不出现，不塞 None 占位。"""
-    quotes = {"sz300308": {"r": 2.35}}
-    watch_part, pool_part = mp.split_result(
-        quotes, watch=["sz300308", "sh601288"], pool=("sz300308", "sz300502"))
-    assert set(watch_part) == {"sz300308"}
-    assert set(pool_part) == {"sz300308"}
-
-
 # --- in_session 交易时段 ---------------------------------------------------
 
 @pytest.mark.parametrize("hhmm,expected", [

@@ -22,6 +22,13 @@ IDX_NAMES = {"sz399006": "创业板指", "sh000001": "上证", "sh000688": "科�
 
 # 长期持仓，见 ~/.claude 记忆 stock-holdings。长鑫科技不在 38 只池内，
 # 它只在「相对强弱」出数字，速度栏是 —。
+#
+# 隐式耦合（已知取舍，不是 bug）：merge_codes 只合并 POOL_CODES 和 IDX_CODES，
+# 不合并 HOLD_CODES。长鑫科技（sh688825）在池外，它的相对强弱数据能拿到，
+# 全靠它恰好在用户自选列表 stock_watch.json 里而被一起请求到。
+# 一旦把它移出自选，请求里就没有它，相对强弱那一节会静默全变「—」，面板不提示原因。
+# 之所以不主动把 HOLD_CODES 合进请求，是为了不让池外票混入宽度和排名的分母——
+# 那是刻意的口径选择，改了会影响判定。所以这里保持依赖自选，接受移出自选即失效的代价。
 HOLD_CODES = ("sz300308", "sz301526", "sh688825")
 HOLD_NAMES = {"sh688825": "长鑫科技"}
 
@@ -43,17 +50,6 @@ def merge_codes(watch, pool=POOL_CODES, idx=IDX_CODES):
             out.append(code)
             seen.add(code)
     return out
-
-
-def split_result(quotes, watch, pool=POOL_CODES):
-    """把一次批量返回按用途分拣成 (自选部分, 池子部分)。
-
-    重叠的票同时出现在两边，指向同一个对象。请求里有、返回里没有的代码
-    两边都不出现——不塞占位值，让上层能看出到底缺了什么。
-    """
-    watch_part = {c: quotes[c] for c in watch if c in quotes}
-    pool_part = {c: quotes[c] for c in pool if c in quotes}
-    return watch_part, pool_part
 
 
 SESSIONS = ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))
