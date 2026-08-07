@@ -1590,16 +1590,44 @@ def test_rank_never_exceeds_pool_size():
 
 
 def test_build_state_rank_within_pool_size():
-    """组装出来的持仓名次不能超过有效票数。
-
-    这条走的是完整链路（store 里的 r 与 live_r 同源同精度），
-    是 39/38 那个 bug 的端到端守护。
-    """
+    """组装出来的持仓名次不能超过有效票数。"""
     st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
     for h in st["holdings"]:
         place, total = h["rank"]
         if place is not None:
             assert place <= total, f"{h['name']} 名次 {place}/{total} 越界"
+
+
+def test_build_state_rank_survives_precision_divergence():
+    """store 与 live_r 精度不一致时，池内票的名次仍不能越界。
+
+    2026-08-07 审查指出：上一版那条「端到端守护」让 live_r 走默认值
+    （= store 的拷贝），精度天然一致，永远构造不出 39/38 的触发条件，
+    等于打偏了靶心。这条显式喂进分叉输入——store 存舍入值 2.351、
+    live_r 给原始值 2.3508（比 store 里自己那个值小）。
+    修法是让池内票的 r 一律取 store 值，所以 live_r 再怎么分叉也影响不到名次。
+    """
+    raw = 2.350785340314141
+    snaps = _two_snaps()
+    snaps[-1]["r"]["sz300308"] = round(raw, 3)          # store：2.351
+    st = mp.build_state(snaps, mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sz300308": raw})        # live：2.3508，偏小
+    zj = [h for h in st["holdings"] if h["name"] == "中际旭创"][0]
+    place, total = zj["rank"]
+    assert place <= total, f"名次 {place}/{total} 越界——精度分叉又回来了"
+    assert zj["r"] == round(raw, 3), "池内票的 r 必须取 store 值，不取 live_r"
+
+
+def test_build_state_pool_outsider_still_uses_live_r():
+    """池外票没进 store，它的 r 必须仍然从 live_r 取。
+
+    上一条把池内票改成取 store 值，不能顺手把池外票也断了——
+    长鑫科技不落盘，live_r 是它唯一的数据来源。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    cx = [h for h in st["holdings"] if h["name"] == "长鑫科技"][0]
+    assert cx["r"] == pytest.approx(-0.17)
 
 
 def test_now_bj_returns_beijing_not_local():
@@ -1825,14 +1853,21 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     hold_rows = []
     all_rs = list(rs_now.values())
     for code in holdings:
-        r = live_r.get(code)
+        # 池内票的 r 一律取 store 里的那个值，不取 live_r。
+        # 2026-08-07 的「排名 39/38」就是这两个来源精度分叉造成的：
+        # 这只票自己的 store 值比它的 live_r 值大，rank 把自己也数了进去。
+        # 只靠"两处都记得 round 到同样位数"是约定，会随新调用点复发；
+        # 让池内票的比较值和被比较的池子同源，才是结构上消灭这一类 bug。
+        # live_r 只服务池外持仓票（长鑫科技），它们本来就不在 all_rs 里。
+        r = rs_now.get(code) if code in POOL_CODES else live_r.get(code)
         place, total = (rank(r, all_rs) if code in POOL_CODES else (None, len(all_rs)))
         hold_rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
                           "r": r, "excess": excess(r, pool_median),
                           "rank": (place, total),
                           "in_pool": code in POOL_CODES})
 
-    first = live_r.get(holdings[0]) if holdings else None
+    first = (rs_now.get(holdings[0]) if holdings and holdings[0] in POOL_CODES
+             else (live_r.get(holdings[0]) if holdings else None))
     return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
             "status": status, "rows": rows, "breadth": br,
             "holdings": hold_rows, "verdict": verdict(br, first),
@@ -1885,7 +1920,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 120 passed（以实测为准）
+Expected: 122 passed（以实测为准）
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1965,7 +2000,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 268 passed（以实测为准）
+Expected: 270 passed（以实测为准）
 
 - [ ] **Step 8: 提交**
 
