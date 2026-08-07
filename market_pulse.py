@@ -9,6 +9,7 @@ import json
 import os
 import statistics as st
 import unicodedata
+import zoneinfo
 
 import intraday_guide as ig
 
@@ -230,7 +231,7 @@ def load_store(seconds, now=None, path=STORE):
     """
     if not os.path.exists(path):
         return []
-    now = now or datetime.datetime.now()
+    now = now or now_bj()
     cutoff = now - datetime.timedelta(seconds=seconds)
     out = []
     with open(path, encoding="utf-8") as fh:
@@ -496,11 +497,29 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
             "pool_median": pool_median, "dropped": 0}
 
 
+MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
+
+
+def now_bj():
+    """当前北京时间，去掉 tzinfo 以便与落盘的时间戳字符串直接比较。
+
+    2026-08-07 实测踩到的坑：本机时区是 JST，比北京快 1 小时。
+    用 datetime.datetime.now() 取本机时间去比对 A 股时段，12 个时点里错 8 个——
+    误采北京 08:30-09:29 的盘前，漏采 10:31-11:30 和 14:01-15:00 两段，
+    尾盘整整一小时全丢，而那正是最需要看盘的时段。
+
+    仓库里 intraday_guide.py:203 和 intraday_collector.py:52 早就定了
+    MARKET_TZ 这个约定，这里对齐它。所有取"现在"的地方都必须走这个函数，
+    不许直接调 datetime.datetime.now()。
+    """
+    return datetime.datetime.now(MARKET_TZ).replace(tzinfo=None)
+
+
 def main():
     """命令行入口：读盘、组装、打印完整面板。"""
     import stock_watch as sw
 
-    now = datetime.datetime.now()
+    now = now_bj()
     rotate_store(now.strftime("%Y-%m-%d"))
     codes = merge_codes(sw.load_config())
     quotes = sw.fetch_quotes(codes)

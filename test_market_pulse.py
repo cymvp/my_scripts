@@ -794,3 +794,30 @@ def test_build_state_breadth_uses_r_not_price():
     st = mp.build_state(snaps, mp.parse_ts("2026-08-07 13:24:15"))
     assert st["breadth"]["down"] >= 1
     assert st["breadth"]["up"] < len(mp.POOL_CODES)
+
+
+def test_now_bj_returns_beijing_not_local():
+    """必须返回北京时间。
+
+    2026-08-07 实测：本机时区是 JST，比北京快 1 小时。若用本机时间
+    比对 A 股时段，12 个时点里错 8 个——误采盘前，且尾盘一小时全漏。
+    """
+    import zoneinfo
+    expect = datetime.datetime.now(
+        zoneinfo.ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    assert abs((mp.now_bj() - expect).total_seconds()) < 5
+
+
+def test_now_bj_is_naive():
+    """去掉 tzinfo，好和落盘的 naive 时间戳直接相减。"""
+    assert mp.now_bj().tzinfo is None
+
+
+def test_in_session_boundary_is_beijing_clock():
+    """时区 bug 的回归守护。
+
+    北京 14:59 在场内、15:59 不在。本机 JST 下北京 14:59 就是本机 15:59，
+    若误用本机时间会把尾盘整整一小时判成盘后、全部漏采。
+    """
+    assert mp.in_session("14:59") is True
+    assert mp.in_session("15:59") is False
