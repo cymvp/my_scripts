@@ -186,6 +186,11 @@ POOL_CODES = tuple(ig.POOL)
 IDX_CODES = ("sz399006", "sh000001", "sh000688")
 IDX_NAMES = {"sz399006": "创业板指", "sh000001": "上证", "sh000688": "科创50"}
 
+# 长期持仓，见 ~/.claude 记忆 stock-holdings。长鑫科技不在 38 只池内，
+# 它只在「相对强弱」出数字，速度栏是 —。
+HOLD_CODES = ("sz300308", "sz301526", "sh688825")
+HOLD_NAMES = {"sh688825": "长鑫科技"}
+
 WINDOWS = (15, 60, 300)      # 速度窗口，单位秒
 MIN_VALID = 20               # 池内有效票少于这个数就不出判定
 VERDICT_RATIO = 0.60         # 判定的涨跌占比门槛，闭区间
@@ -839,8 +844,9 @@ def test_parse_ts_rejects_garbage():
         mp.parse_ts("13:24:15")
 
 
-def _snap(ts, price=100.0):
-    return {"t": ts, "q": {"sz300308": price}, "idx": {}}
+def _snap(ts, r=2.35):
+    """落盘存的是涨跌幅 r（%），不是价格——见 spec §4.2。"""
+    return {"t": ts, "r": {"sz300308": r}, "idx": {}}
 
 
 def test_pick_snapshot_exact():
@@ -969,7 +975,7 @@ git commit -m "feat(market_pulse): 时间戳解析与按容差取历史快照"
 
 def test_append_store_writes_in_session(tmp_path):
     p = tmp_path / "s.jsonl"
-    snap = {"t": "2026-08-07 13:24:15", "q": {"sz300308": 977.45}, "idx": {}}
+    snap = {"t": "2026-08-07 13:24:15", "r": {"sz300308": 2.35}, "idx": {}}
     assert mp.append_store(snap, path=str(p)) is True
     assert len(p.read_text(encoding="utf-8").strip().splitlines()) == 1
 
@@ -977,7 +983,7 @@ def test_append_store_writes_in_session(tmp_path):
 def test_append_store_skips_outside_session(tmp_path):
     """午休不写——避免文件里灌一堆重复快照。"""
     p = tmp_path / "s.jsonl"
-    snap = {"t": "2026-08-07 12:00:00", "q": {"sz300308": 977.45}, "idx": {}}
+    snap = {"t": "2026-08-07 12:00:00", "r": {"sz300308": 2.35}, "idx": {}}
     assert mp.append_store(snap, path=str(p)) is False
     assert not p.exists()
 
@@ -987,18 +993,18 @@ def test_load_store_roundtrip(tmp_path):
     now = mp.parse_ts("2026-08-07 13:25:00")
     for i in range(10):
         mp.append_store({"t": f"2026-08-07 13:24:{i:02d}",
-                         "q": {"sz300308": 977.0 + i}, "idx": {}}, path=str(p))
+                         "r": {"sz300308": 2.0 + i * 0.1}, "idx": {}}, path=str(p))
     got = mp.load_store(120, now=now, path=str(p))
     assert len(got) == 10
     assert got[0]["t"] == "2026-08-07 13:24:00"
-    assert got[-1]["q"]["sz300308"] == pytest.approx(986.0)
+    assert got[-1]["r"]["sz300308"] == pytest.approx(2.9)
 
 
 def test_load_store_filters_by_age(tmp_path):
     """只要最近 N 秒的，更早的不读。"""
     p = tmp_path / "s.jsonl"
     for ts in ("13:20:00", "13:24:00", "13:24:50"):
-        mp.append_store({"t": f"2026-08-07 {ts}", "q": {}, "idx": {}}, path=str(p))
+        mp.append_store({"t": f"2026-08-07 {ts}", "r": {}, "idx": {}}, path=str(p))
     got = mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"), path=str(p))
     assert [s["t"] for s in got] == ["2026-08-07 13:24:00", "2026-08-07 13:24:50"]
 
@@ -1006,9 +1012,9 @@ def test_load_store_filters_by_age(tmp_path):
 def test_load_store_skips_corrupt_lines(tmp_path):
     """损坏行跳过继续读，不让整个文件报废。"""
     p = tmp_path / "s.jsonl"
-    p.write_text('{"t":"2026-08-07 13:24:00","q":{},"idx":{}}\n'
+    p.write_text('{"t":"2026-08-07 13:24:00","r":{},"idx":{}}\n'
                  'NOT JSON\n'
-                 '{"t":"2026-08-07 13:24:30","q":{},"idx":{}}\n', encoding="utf-8")
+                 '{"t":"2026-08-07 13:24:30","r":{},"idx":{}}\n', encoding="utf-8")
     got = mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"), path=str(p))
     assert len(got) == 2
 
@@ -1021,14 +1027,14 @@ def test_load_store_missing_file(tmp_path):
 def test_rotate_store_clears_stale_day(tmp_path):
     """昨天的记录必须清掉——昨收接今开会算出跨夜跳空的假速度。"""
     p = tmp_path / "s.jsonl"
-    p.write_text('{"t":"2026-08-06 14:00:00","q":{},"idx":{}}\n', encoding="utf-8")
+    p.write_text('{"t":"2026-08-06 14:00:00","r":{},"idx":{}}\n', encoding="utf-8")
     assert mp.rotate_store("2026-08-07", path=str(p)) is True
     assert p.read_text(encoding="utf-8") == ""
 
 
 def test_rotate_store_keeps_today(tmp_path):
     p = tmp_path / "s.jsonl"
-    p.write_text('{"t":"2026-08-07 09:31:00","q":{},"idx":{}}\n', encoding="utf-8")
+    p.write_text('{"t":"2026-08-07 09:31:00","r":{},"idx":{}}\n', encoding="utf-8")
     assert mp.rotate_store("2026-08-07", path=str(p)) is False
     assert p.read_text(encoding="utf-8") != ""
 
@@ -1047,23 +1053,23 @@ def test_store_status_not_running_when_empty():
 
 def test_store_status_not_running_when_stale():
     """最后一条超过 STALE_SEC（60 秒）视为采集已停。"""
-    store = [{"t": "2026-08-07 13:23:00", "q": {}, "idx": {}}]
+    store = [{"t": "2026-08-07 13:23:00", "r": {}, "idx": {}}]
     got, _ = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
     assert got == "not_running"
 
 
 def test_store_status_warming_up():
     """采集刚启动，最早一条距现在不足最长窗口（300 秒）。"""
-    store = [{"t": "2026-08-07 13:24:13", "q": {}, "idx": {}},
-             {"t": "2026-08-07 13:25:00", "q": {}, "idx": {}}]
+    store = [{"t": "2026-08-07 13:24:13", "r": {}, "idx": {}},
+             {"t": "2026-08-07 13:25:00", "r": {}, "idx": {}}]
     got, why = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
     assert got == "warming_up"
     assert "47" in why and "300" in why
 
 
 def test_store_status_ok():
-    store = [{"t": "2026-08-07 13:19:00", "q": {}, "idx": {}},
-             {"t": "2026-08-07 13:25:00", "q": {}, "idx": {}}]
+    store = [{"t": "2026-08-07 13:19:00", "r": {}, "idx": {}},
+             {"t": "2026-08-07 13:25:00", "r": {}, "idx": {}}]
     got, _ = mp.store_status(store, mp.parse_ts("2026-08-07 13:25:00"))
     assert got == "ok"
 ```
@@ -1213,15 +1219,22 @@ def _state(**over):
         "status": ("ok", ""),
         "rows": [
             {"name": "中际旭创", "speeds": [-0.21, -0.55, -1.32]},
+            {"name": "国际复材", "speeds": [0.30, 0.81, 2.10]},
+            {"name": "长鑫科技", "speeds": [None, None, None]},
             {"name": "光模块(3只)", "speeds": [-0.15, -0.41, -0.98]},
+            {"name": "电子布(3只)", "speeds": [0.22, 0.65, 1.80]},
             {"name": "科技池(38只)", "speeds": [-0.08, -0.22, -0.51]},
             {"name": "创业板指", "speeds": [-0.04, -0.13, -0.30]},
         ],
         "breadth": {"up": 34, "down": 4, "flat": 0, "valid": 38,
                     "flip_down": 3, "flip_up": 0},
         "holdings": [
-            {"name": "中际旭创", "r": 2.35, "excess": 0.69, "rank": (17, 38)},
-            {"name": "国际复材", "r": 7.24, "excess": 5.58, "rank": (4, 38)},
+            {"name": "中际旭创", "r": 2.35, "excess": 0.69, "rank": (17, 38),
+             "in_pool": True},
+            {"name": "国际复材", "r": 7.24, "excess": 5.58, "rank": (4, 38),
+             "in_pool": True},
+            {"name": "长鑫科技", "r": -0.17, "excess": -1.83, "rank": (None, 38),
+             "in_pool": False},
         ],
         "verdict": ("同涨", "池内 34/38 上涨（89%）、4/38 下跌（11%）"),
         "pool_median": 1.66,
@@ -1260,6 +1273,20 @@ def test_render_panel_shows_sample_too_small():
 def test_render_panel_reports_dropped_lines():
     out = mp.render_panel(_state(dropped=3))
     assert "跳过 3 行损坏记录" in out
+
+
+def test_render_panel_shows_dash_for_pool_outsider():
+    """长鑫科技不在 38 只池内：速度栏是 —，排名标「不在池内」。"""
+    out = mp.render_panel(_state())
+    assert "长鑫科技" in out
+    assert "不在池内" in out
+
+
+def test_render_panel_has_sector_and_index_rows():
+    """面板速度栏固定顺序：持仓票 → 赛道 → 科技池 → 创业板指。"""
+    out = mp.render_panel(_state())
+    for name in ("光模块(3只)", "电子布(3只)", "科技池(38只)", "创业板指"):
+        assert name in out
 
 
 def test_render_strip_within_width_limit():
@@ -1328,9 +1355,13 @@ def render_panel(state):
     lines.append("【相对强弱】")
     for h in state["holdings"]:
         place, total = h["rank"]
-        pos = "—" if place is None else f"{place}/{total}（前 {place / total * 100:.0f}%）"
+        if place is None:
+            pos = "—（不在池内）" if not h.get("in_pool", True) else "—"
+        else:
+            pos = f"{place}/{total}（前 {place / total * 100:.0f}%）"
         exc = "—" if h["excess"] is None else f"{h['excess']:+.2f}pp"
-        lines.append(f"  {h['name']:<10}{h['r']:+7.2f}%  超额(vs池) {exc}  排名 {pos}")
+        r_txt = "   —   " if h["r"] is None else f"{h['r']:+7.2f}%"
+        lines.append(f"  {h['name']:<10}{r_txt}  超额(vs池) {exc}  排名 {pos}")
     lines.append("")
 
     got, why = state["verdict"]
@@ -1366,7 +1397,7 @@ def render_strip(state):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 95 passed
+Expected: 97 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1426,6 +1457,66 @@ def test_build_state_marks_all_windows_unavailable_when_not_running():
     assert st["status"][0] == "not_running"
     for row in st["rows"]:
         assert row["speeds"] == [None, None, None]
+
+
+def _two_snaps():
+    """构造两条快照：13:24:00 和 13:24:15，中际旭创从 +2.51 掉到 +2.30。"""
+    pool = {c: 1.0 for c in mp.POOL_CODES}
+    a = dict(pool, sz300308=2.51, sz301526=7.00)
+    b = dict(pool, sz300308=2.30, sz301526=7.24)
+    return [{"t": "2026-08-07 13:24:00", "r": a, "idx": {"sz399006": 1.70}},
+            {"t": "2026-08-07 13:24:15", "r": b, "idx": {"sz399006": 1.75}}]
+
+
+def test_build_state_rows_in_spec_order():
+    """行顺序：持仓票（3 行）→ 赛道（2 行）→ 科技池 → 创业板指 = 7 行。
+
+    长鑫科技不在 SECTOR 里，不产生赛道行。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    names = [r["name"] for r in st["rows"]]
+    assert names[:3] == ["中际旭创", "国际复材", "长鑫科技"]
+    assert names[3].startswith("光模块") and names[4].startswith("电子布")
+    assert names[5].startswith("科技池")
+    assert names[6] == "创业板指"
+
+
+def test_build_state_computes_15s_speed():
+    """15 秒窗口：中际旭创从 +2.51 掉到 +2.30，速度 −0.21 pp。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
+    assert st["rows"][0]["speeds"][0] == pytest.approx(-0.21)
+
+
+def test_build_state_pool_outsider_has_no_speed():
+    """长鑫科技不落盘，三个窗口全是 None。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    assert st["rows"][2]["speeds"] == [None, None, None]
+
+
+def test_build_state_pool_outsider_still_gets_excess():
+    """长鑫的相对强弱用实时行情出数，但排名为 None（不在池内）。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"),
+                        live_r={"sh688825": -0.17})
+    cx = [h for h in st["holdings"] if h["name"] == "长鑫科技"][0]
+    assert cx["r"] == pytest.approx(-0.17)
+    assert cx["excess"] is not None
+    assert cx["rank"][0] is None
+    assert cx["in_pool"] is False
+
+
+def test_build_state_breadth_uses_r_not_price():
+    """宽度必须基于涨跌幅。
+
+    2026-08-07 设计评审发现的缺陷：落盘若存价格，价格永远为正，
+    上涨家数会恒等于 38。这条测试就是那个 bug 的守门人。
+    """
+    snaps = _two_snaps()
+    snaps[-1]["r"]["sz300502"] = -3.0
+    st = mp.build_state(snaps, mp.parse_ts("2026-08-07 13:24:15"))
+    assert st["breadth"]["down"] >= 1
+    assert st["breadth"]["up"] < len(mp.POOL_CODES)
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1458,7 +1549,11 @@ def parse_pool_quotes(raw_quotes):
 
 
 def _speeds_for(store, now, key_fn):
-    """对每个窗口算一次速度。key_fn(snapshot) 返回该快照对应的涨跌幅。"""
+    """对每个窗口算一次速度。key_fn(snapshot) 返回该快照对应的涨跌幅。
+
+    key_fn 返回 None（该票没落盘，例如池外的长鑫科技）时，速度也是 None，
+    面板渲染成「—」。
+    """
     out = []
     now_snap = store[-1] if store else None
     for w in WINDOWS:
@@ -1471,39 +1566,64 @@ def _speeds_for(store, now, key_fn):
     return out
 
 
-def build_state(store, now, holdings):
+def _sector_key(snap, codes):
+    """一个赛道在某条快照上的中位涨跌幅。"""
+    return aggregate([snap["r"].get(c) for c in codes])[0]
+
+
+def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     """组装 render_panel / render_strip 需要的 state。
 
-    store 为空或过期时，三个窗口全部返回 None——不用任何别的粒度的数据源凑。
+    store 为空或过期时三个窗口全部返回 None——不用任何别的粒度的数据源凑。
+
+    live_r 是当次实时行情的 {代码: 涨跌幅}，用来给池外持仓票（长鑫科技）
+    出「相对强弱」那一节的数字。它不落盘，所以速度栏是 None。
     """
     status = store_status(store, now)
-    cur = store[-1]["q"] if store else {}
+    cur = store[-1]["r"] if store else {}
     rs_now = {c: v for c, v in cur.items() if v is not None}
     br = breadth(rs_now)
     pool_median, valid = aggregate(list(rs_now.values()))
-
-    def pool_key(snap):
-        vals = [v for v in snap["q"].values() if v is not None]
-        return aggregate(vals)[0]
+    live_r = live_r or dict(rs_now)
 
     rows = []
+    # 一、每只持仓票各一行
     for code in holdings:
-        rows.append({"name": ig.POOL.get(code, code),
+        rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
                      "speeds": _speeds_for(store, now,
-                                           lambda s, c=code: s["q"].get(c))})
+                                           lambda s, c=code: s["r"].get(c))})
+    # 二、持仓票所属赛道各一行，同赛道只出一次，池外票没有赛道直接跳过
+    seen_sectors = []
+    for code in holdings:
+        sec = ig.SECTOR.get(code)
+        if sec and sec not in seen_sectors:
+            seen_sectors.append(sec)
+    for sec in seen_sectors:
+        members = [c for c, s in ig.SECTOR.items() if s == sec]
+        rows.append({"name": f"{sec}({len(members)}只)",
+                     "speeds": _speeds_for(store, now,
+                                           lambda s, m=members: _sector_key(s, m))})
+    # 三、科技池
     rows.append({"name": f"科技池({valid}只)",
-                 "speeds": _speeds_for(store, now, pool_key)})
+                 "speeds": _speeds_for(
+                     store, now,
+                     lambda s: aggregate(list(s["r"].values()))[0])})
+    # 四、创业板指
+    rows.append({"name": IDX_NAMES["sz399006"],
+                 "speeds": _speeds_for(store, now,
+                                       lambda s: s["idx"].get("sz399006"))})
 
     hold_rows = []
     all_rs = list(rs_now.values())
     for code in holdings:
-        r = rs_now.get(code)
-        place, total = rank(r, all_rs)
-        hold_rows.append({"name": ig.POOL.get(code, code), "r": r,
-                          "excess": excess(r, pool_median),
-                          "rank": (place, total)})
+        r = live_r.get(code)
+        place, total = (rank(r, all_rs) if code in POOL_CODES else (None, len(all_rs)))
+        hold_rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
+                          "r": r, "excess": excess(r, pool_median),
+                          "rank": (place, total),
+                          "in_pool": code in POOL_CODES})
 
-    first = rs_now.get(holdings[0]) if holdings else None
+    first = live_r.get(holdings[0]) if holdings else None
     return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
             "status": status, "rows": rows, "breadth": br,
             "holdings": hold_rows, "verdict": verdict(br, first),
@@ -1520,12 +1640,12 @@ def main():
     quotes = sw.fetch_quotes(codes)
     pool = parse_pool_quotes(quotes)
     snap = {"t": now.strftime(TS_FMT),
-            "q": {c: v["px"] for c, v in pool.items() if c in POOL_CODES},
-            "idx": {c: v["px"] for c, v in pool.items() if c in IDX_CODES}}
+            "r": {c: round(v["r"], 3) for c, v in pool.items() if c in POOL_CODES},
+            "idx": {c: round(v["r"], 3) for c, v in pool.items() if c in IDX_CODES}}
     append_store(snap)
     store = load_store(max(WINDOWS) * 2, now=now)
-    print(render_panel(build_state(store, now,
-                                   holdings=["sz300308", "sz301526"])))
+    live_r = {c: v["r"] for c, v in pool.items()}
+    print(render_panel(build_state(store, now, live_r=live_r)))
 
 
 if __name__ == "__main__":
@@ -1538,7 +1658,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 99 passed
+Expected: 106 passed
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1583,7 +1703,7 @@ def test_pool_quotes_have_positive_prices():
 
 def test_store_roundtrip(tmp_path):
     p = str(tmp_path / "s.jsonl")
-    snap = {"t": "2026-08-07 13:24:15", "q": {"sz300308": 977.45}, "idx": {}}
+    snap = {"t": "2026-08-07 13:24:15", "r": {"sz300308": 2.35}, "idx": {}}
     assert mp.append_store(snap, path=p) is True
     got = mp.load_store(120, now=mp.parse_ts("2026-08-07 13:25:00"), path=p)
     assert got == [snap]
@@ -1591,14 +1711,14 @@ def test_store_roundtrip(tmp_path):
 
 def test_rotate_clears_yesterday(tmp_path):
     p = tmp_path / "s.jsonl"
-    p.write_text('{"t":"2026-08-06 14:00:00","q":{},"idx":{}}\n', encoding="utf-8")
+    p.write_text('{"t":"2026-08-06 14:00:00","r":{},"idx":{}}\n', encoding="utf-8")
     assert mp.rotate_store("2026-08-07", path=str(p)) is True
     assert p.read_text(encoding="utf-8") == ""
 
 
 def test_no_write_outside_session(tmp_path):
     p = tmp_path / "s.jsonl"
-    snap = {"t": "2026-08-07 12:00:00", "q": {"sz300308": 977.45}, "idx": {}}
+    snap = {"t": "2026-08-07 12:00:00", "r": {"sz300308": 2.35}, "idx": {}}
     assert mp.append_store(snap, path=str(p)) is False
     assert not p.exists()
 ```
@@ -1618,7 +1738,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 247 passed（原有 148 + 新增 99）
+Expected: 254 passed（原有 148 + 新增 106）
 
 - [ ] **Step 8: 提交**
 
@@ -1704,14 +1824,14 @@ Expected: FAIL 或 ERROR（`market_pulse` 尚未被 `stock_watch` 引用时，�
                 now = datetime.datetime.now()
                 pool = mp.parse_pool_quotes(quotes)
                 snap = {"t": now.strftime(mp.TS_FMT),
-                        "q": {c: v["px"] for c, v in pool.items()
+                        "r": {c: round(v["r"], 3) for c, v in pool.items()
                               if c in mp.POOL_CODES},
-                        "idx": {c: v["px"] for c, v in pool.items()
+                        "idx": {c: round(v["r"], 3) for c, v in pool.items()
                                 if c in mp.IDX_CODES}}
                 mp.append_store(snap)
                 store = mp.load_store(max(mp.WINDOWS) * 2, now=now)
-                state = mp.build_state(store, now,
-                                       holdings=["sz300308", "sz301526"])
+                live_r = {c: v["r"] for c, v in pool.items()}
+                state = mp.build_state(store, now, live_r=live_r)
                 self._pulse_strip = mp.render_strip(state)
             except Exception as exc:          # 脉搏出错不能连累自选行情
                 self._pulse_strip = "脉搏异常"
