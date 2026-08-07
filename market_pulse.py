@@ -409,7 +409,11 @@ def parse_pool_quotes(raw_quotes):
         px, pc = q.get("current"), q.get("prev_close")
         if not px or not pc:
             continue
-        out[q["code"]] = {"r": (px - pc) / pc * 100, "px": px}
+        # 精度在这里一次性定死，下游不许再各自舍入。
+        # 2026-08-07 踩到：main() 落盘时 round(r,3)、live_r 用原始值，
+        # 于是持仓票自己的舍入值进了对比池，rank 拿原始值比较时把自己
+        # 也数了进去，面板出现「排名 39/38（前 103%）」。
+        out[q["code"]] = {"r": round((px - pc) / pc * 100, 3), "px": px}
     return out
 
 
@@ -525,8 +529,8 @@ def main():
     quotes = sw.fetch_quotes(codes)
     pool = parse_pool_quotes(quotes)
     snap = {"t": now.strftime(TS_FMT),
-            "r": {c: round(v["r"], 3) for c, v in pool.items() if c in POOL_CODES},
-            "idx": {c: round(v["r"], 3) for c, v in pool.items() if c in IDX_CODES}}
+            "r": {c: v["r"] for c, v in pool.items() if c in POOL_CODES},
+            "idx": {c: v["r"] for c, v in pool.items() if c in IDX_CODES}}
     append_store(snap)
     store = load_store(max(WINDOWS) * 2, now=now)
     live_r = {c: v["r"] for c, v in pool.items()}

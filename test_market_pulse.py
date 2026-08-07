@@ -821,3 +821,35 @@ def test_in_session_boundary_is_beijing_clock():
     """
     assert mp.in_session("14:59") is True
     assert mp.in_session("15:59") is False
+
+
+def test_parse_pool_quotes_rounds_r_once():
+    """涨跌幅在 parse_pool_quotes 一次性定死 3 位小数，下游不再各自舍入。
+
+    2026-08-07 实测踩到的坑：main() 落盘时 round(r,3)、live_r 用原始值，
+    同一只票在 store 和 live_r 里取值不同，rank 比较时把自己也数了进去。
+    """
+    raw = [{"code": "a", "current": 977.45, "prev_close": 955.0, "ok": True}]
+    assert mp.parse_pool_quotes(raw)["a"]["r"] == 2.351
+
+
+def test_rank_never_exceeds_pool_size():
+    """名次不能超过有效票数——防「排名 39/38（前 103%）」复现。"""
+    raw = 2.350785340314141
+    all_rs = [round(raw, 3)] + [1.0] * 37
+    place, total = mp.rank(round(raw, 3), all_rs)
+    assert place <= total
+    assert place == 1
+
+
+def test_build_state_rank_within_pool_size():
+    """组装出来的持仓名次不能超过有效票数。
+
+    这条走的是完整链路（store 里的 r 与 live_r 同源同精度），
+    是 39/38 那个 bug 的端到端守护。
+    """
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
+    for h in st["holdings"]:
+        place, total = h["rank"]
+        if place is not None:
+            assert place <= total, f"{h['name']} 名次 {place}/{total} 越界"
