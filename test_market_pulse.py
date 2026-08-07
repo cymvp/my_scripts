@@ -70,3 +70,38 @@ def test_split_result_ignores_missing():
         quotes, watch=["sz300308", "sh601288"], pool=("sz300308", "sz300502"))
     assert set(watch_part) == {"sz300308"}
     assert set(pool_part) == {"sz300308"}
+
+
+# --- in_session 交易时段 ---------------------------------------------------
+
+@pytest.mark.parametrize("hhmm,expected", [
+    ("09:14", False),   # 竞价前
+    ("09:20", False),   # 集合竞价——虚拟撮合价，混进速度序列会造假信号
+    ("09:29", False),
+    ("09:30", True),    # 开盘首笔
+    ("10:30", True),
+    ("11:29", True),
+    ("11:30", True),    # 上午收盘那一笔算
+    ("11:31", False),   # 午休
+    ("12:00", False),
+    ("12:59", False),
+    ("13:00", True),    # 下午开盘
+    ("14:57", True),
+    ("15:00", True),    # 收盘那一笔算
+    ("15:01", False),   # 盘后
+    ("23:00", False),
+])
+def test_in_session(hhmm, expected):
+    assert mp.in_session(hhmm) is expected
+
+
+def test_in_session_accepts_seconds():
+    """带秒的时间戳也要认，落盘里存的是 HH:MM:SS。"""
+    assert mp.in_session("10:30:15") is True
+    assert mp.in_session("12:00:01") is False
+
+
+def test_in_session_rejects_garbage():
+    """格式不对直接抛，不静默返回 False——那会让采集悄悄停掉。"""
+    with pytest.raises(ValueError):
+        mp.in_session("abc")
