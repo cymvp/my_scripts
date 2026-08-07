@@ -1243,7 +1243,7 @@ def _state(**over):
         "rows": [
             {"name": "中际旭创", "speeds": [-0.21, -0.55, -1.32]},
             {"name": "国际复材", "speeds": [0.30, 0.81, 2.10]},
-            {"name": "长鑫科技", "speeds": [None, None, None]},
+            {"name": "长鑫科技", "speeds": [None, None, None], "dash": True},
             {"name": "光模块(3只)", "speeds": [-0.15, -0.41, -0.98]},
             {"name": "电子布(3只)", "speeds": [0.22, 0.65, 1.80]},
             {"name": "科技池(38只)", "speeds": [-0.08, -0.22, -0.51]},
@@ -1278,13 +1278,48 @@ def test_render_panel_shows_speed_numbers():
     assert "-0.21" in out and "-1.32" in out
 
 
-def test_render_panel_shows_unavailable_instead_of_numbers():
-    """采集没运行时，速度栏出现「不可用」且不出现任何速度数字。"""
-    st = _state(status=("not_running", "不可用（悬浮窗未启动）"),
-                rows=[{"name": "中际旭创", "speeds": [None, None, None]}])
-    out = mp.render_panel(st)
-    assert "不可用" in out
-    assert "-0.21" not in out
+def test_render_panel_speed_cells_have_no_numbers_when_unavailable():
+    """硬约束的守护测试：速度不可用时，那一行不能出现任何数字。
+
+    断言的是速度行本身，不是整个面板。2026-08-07 审查发现的教训：
+    原来那版把 status 设成 not_running，于是面板底部会多一行
+    「不可用（悬浮窗未启动）」，`"不可用" in out` 由那行满足，
+    和速度单元格毫无关系——`_fmt_speed(None)` 就算回归成返回 "+0.00"
+    去凑数，那版测试照样通过。所以这里把 status 设成 ok、holdings 清空，
+    让「不可用」只可能来自速度单元格，再断言整行没有数字。
+    """
+    st = _state(rows=[{"name": "中际旭创", "speeds": [None, None, None]}],
+                holdings=[], status=("ok", ""))
+    line = [x for x in mp.render_panel(st).splitlines() if "中际旭创" in x][0]
+    assert "不可用" in line
+    assert not any(ch.isdigit() for ch in line)
+
+
+def test_render_panel_distinguishes_dash_from_unavailable():
+    """池外票显示「—」，采集故障显示「不可用」，两者不能混。
+
+    长鑫科技不在 38 只池内、不落盘，它没有速度是结构性的；
+    而采集没跑起来是故障。混成一种会让面板自相矛盾。
+    """
+    st = _state(rows=[{"name": "长鑫科技", "speeds": [None] * 3, "dash": True},
+                      {"name": "中际旭创", "speeds": [None] * 3}],
+                holdings=[], status=("ok", ""))
+    out = mp.render_panel(st).splitlines()
+    cx = [x for x in out if "长鑫科技" in x][0]
+    zj = [x for x in out if "中际旭创" in x][0]
+    assert "—" in cx and "不可用" not in cx
+    assert "不可用" in zj and "—" not in zj
+
+
+def test_render_panel_window_labels_are_human_readable():
+    """表头用「1分钟 / 5分钟」，不用「60秒 / 300秒」。
+
+    这个面板的价值是盘中一眼看懂，让读者把 300 秒心算成 5 分钟
+    直接削弱它存在的理由。spec §6.1 的样例就是这么写的。
+    """
+    out = mp.render_panel(_state())
+    assert "15秒" in out and "1分钟" in out and "5分钟" in out
+    assert "60秒" not in out and "300秒" not in out
 
 
 def test_render_panel_shows_sample_too_small():
@@ -1299,10 +1334,39 @@ def test_render_panel_reports_dropped_lines():
 
 
 def test_render_panel_shows_dash_for_pool_outsider():
-    """长鑫科技不在 38 只池内：速度栏是 —，排名标「不在池内」。"""
-    out = mp.render_panel(_state())
-    assert "长鑫科技" in out
-    assert "不在池内" in out
+    """长鑫科技不在 38 只池内：速度栏是「—」，排名标「不在池内」。
+
+    2026-08-07 审查发现的教训：原来那版只断言 `"不在池内" in out`，
+    而那句话来自【相对强弱】节的排名文本，和速度栏渲染毫无关系——
+    速度栏渲染成「不可用」（违反 spec）它照样通过。所以这里分别
+    定位到两行各自断言。
+    """
+    rows = [{"name": "长鑫科技", "speeds": [None] * 3, "dash": True}]
+    st = _state(rows=rows)
+    out = mp.render_panel(st).splitlines()
+    speed_line = [x for x in out if "长鑫科技" in x][0]
+    rank_line = [x for x in out if "长鑫科技" in x][-1]
+    assert "—" in speed_line and "不可用" not in speed_line
+    assert "不在池内" in rank_line
+
+
+def test_render_strip_handles_missing_excess():
+    """超额为 None 时不能崩，也不能格式化 None。"""
+    st = _state(holdings=[{"name": "中际旭创", "r": 2.35, "excess": None,
+                           "rank": (17, 38), "in_pool": True}])
+    assert mp.display_width(mp.render_strip(st)) <= 40
+
+
+def test_render_strip_handles_missing_rank():
+    st = _state(holdings=[{"name": "长鑫科技", "r": -0.17, "excess": -1.83,
+                           "rank": (None, 38), "in_pool": False}])
+    assert mp.display_width(mp.render_strip(st)) <= 40
+
+
+def test_render_strip_handles_empty_holdings():
+    out = mp.render_strip(_state(holdings=[]))
+    assert "同涨" in out
+    assert mp.display_width(out) <= 40
 
 
 def test_render_panel_has_sector_and_index_rows():
@@ -1360,8 +1424,21 @@ def _pad_r(s, width):
     return " " * max(0, width - display_width(s)) + s
 
 
-def _fmt_speed(v):
-    return "不可用" if v is None else f"{v:+.2f}"
+WINDOW_LABELS = {15: "15秒", 60: "1分钟", 300: "5分钟"}
+
+
+def _fmt_speed(v, dash=False):
+    """速度单元格。
+
+    两种 None 含义不同，必须分开显示：
+      dash=True  —— 这只票结构性地没有数据（池外持仓票不落盘），显示「—」
+      dash=False —— 有数据但这次取不到（采集未启动、窗口无快照），显示「不可用」
+    混成一种会让面板自相矛盾：同一只长鑫科技，速度栏说「不可用」暗示采集出了问题，
+    排名栏却说「不在池内」是结构性的。
+    """
+    if v is None:
+        return "—" if dash else "不可用"
+    return f"{v:+.2f}"
 
 
 def render_panel(state):
@@ -1376,10 +1453,12 @@ def render_panel(state):
 
     lines.append("【速度】单位 pp（该窗口内涨跌幅的变化量）")
     lines.append("  " + _pad_l("", 16)
-                 + "".join(_pad_r(f"{w}秒", 9) for w in WINDOWS))
+                 + "".join(_pad_r(WINDOW_LABELS[w], 9) for w in WINDOWS))
     for row in state["rows"]:
+        dash = row.get("dash", False)
         lines.append("  " + _pad_l(row["name"], 16)
-                     + "".join(_pad_r(_fmt_speed(v), 9) for v in row["speeds"]))
+                     + "".join(_pad_r(_fmt_speed(v, dash), 9)
+                               for v in row["speeds"]))
     if state["status"][0] != "ok":
         lines.append(f"  {state['status'][1]}")
     lines.append("")
@@ -1437,7 +1516,7 @@ def render_strip(state):
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 98 passed
+Expected: 105 passed（以实测为准）
 
 - [ ] **Step 5: 提交**
 
@@ -1630,6 +1709,8 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     # 一、每只持仓票各一行
     for code in holdings:
         rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
+                     # 池外票不落盘，速度是结构性缺失，渲染成「—」不是「不可用」
+                     "dash": code not in POOL_CODES,
                      "speeds": _speeds_for(store, now,
                                            lambda s, c=code: s["r"].get(c))})
     # 二、持仓票所属赛道各一行，同赛道只出一次，池外票没有赛道直接跳过
@@ -1698,7 +1779,7 @@ if __name__ == "__main__":
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest test_market_pulse.py -q
 ```
 
-Expected: 107 passed
+Expected: 114 passed（以实测为准）
 
 - [ ] **Step 5: 写集成测试**
 
@@ -1778,7 +1859,7 @@ Expected: 集成测试 5 passed；面板打印出四块内容。**首次运行�
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
-Expected: 255 passed（原有 148 + 新增 107）
+Expected: 262 passed（原有 148 + 新增 114，以实测为准）
 
 - [ ] **Step 8: 提交**
 
