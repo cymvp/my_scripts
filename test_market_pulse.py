@@ -1,4 +1,6 @@
 """market_pulse 纯函数的单元测试（不联网、不读盘）。"""
+import datetime
+
 import pytest
 
 import market_pulse as mp
@@ -331,3 +333,60 @@ def test_rank_none_when_stock_missing():
 
 def test_rank_none_when_pool_empty():
     assert mp.rank(1.0, []) == (None, 0)
+
+
+# --- parse_ts / pick_snapshot ---------------------------------------------
+
+def test_parse_ts():
+    got = mp.parse_ts("2026-08-07 13:24:15")
+    assert (got.year, got.month, got.day) == (2026, 8, 7)
+    assert (got.hour, got.minute, got.second) == (13, 24, 15)
+
+
+def test_parse_ts_rejects_garbage():
+    with pytest.raises(ValueError):
+        mp.parse_ts("13:24:15")
+
+
+def _snap(ts, r=2.35):
+    """落盘存的是涨跌幅 r（%），不是价格——见 spec §4.2。"""
+    return {"t": ts, "r": {"sz300308": r}, "idx": {}}
+
+
+def test_pick_snapshot_exact():
+    store = [_snap("2026-08-07 13:24:00"), _snap("2026-08-07 13:24:15")]
+    got = mp.pick_snapshot(store, mp.parse_ts("2026-08-07 13:24:00"), 5)
+    assert got["t"] == "2026-08-07 13:24:00"
+
+
+def test_pick_snapshot_within_tolerance():
+    """目标 13:24:00、容差 5 秒，13:24:02 的快照可用。"""
+    store = [_snap("2026-08-07 13:24:02")]
+    got = mp.pick_snapshot(store, mp.parse_ts("2026-08-07 13:24:00"), 5)
+    assert got["t"] == "2026-08-07 13:24:02"
+
+
+def test_pick_snapshot_beyond_tolerance_returns_none():
+    """目标 13:24:00，最近的是 13:23:50，偏差 10 秒 > 容差 5 秒 —— 不可用。
+
+    宁可标注不可用，也不拿一个口径不同的数去凑。
+    """
+    store = [_snap("2026-08-07 13:23:50")]
+    assert mp.pick_snapshot(store, mp.parse_ts("2026-08-07 13:24:00"), 5) is None
+
+
+def test_pick_snapshot_picks_nearest():
+    store = [_snap("2026-08-07 13:23:58"), _snap("2026-08-07 13:24:04")]
+    got = mp.pick_snapshot(store, mp.parse_ts("2026-08-07 13:24:00"), 5)
+    assert got["t"] == "2026-08-07 13:23:58"      # 偏差 2 秒 < 4 秒
+
+
+def test_pick_snapshot_empty_store():
+    assert mp.pick_snapshot([], mp.parse_ts("2026-08-07 13:24:00"), 5) is None
+
+
+def test_pick_snapshot_tolerance_is_third_of_window():
+    """15 秒窗口的容差是 5 秒，300 秒窗口是 100 秒。"""
+    assert mp.window_tolerance(15) == pytest.approx(5.0)
+    assert mp.window_tolerance(60) == pytest.approx(20.0)
+    assert mp.window_tolerance(300) == pytest.approx(100.0)

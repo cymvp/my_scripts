@@ -4,6 +4,7 @@
 
 只描述已经发生的涨跌，不做方向预测。
 """
+import datetime
 import os
 import statistics as st
 
@@ -172,3 +173,35 @@ def rank(r_stock, all_rs):
     if r_stock is None or not valid:
         return None, len(valid)
     return sum(1 for r in valid if r > r_stock) + 1, len(valid)
+
+
+TS_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def parse_ts(s):
+    """解析落盘里的时间戳 "2026-08-07 13:24:15"。格式不对抛 ValueError。"""
+    return datetime.datetime.strptime(s, TS_FMT)
+
+
+def window_tolerance(window_sec):
+    """窗口取值的允许偏差 = 窗口长度的三分之一。
+
+    采样点不会正好落在 t − w 上，所以要给一个容差。取三分之一是因为
+    3 秒采样下，15 秒窗口的容差 5 秒刚好覆盖一到两个采样间隔。
+    """
+    return window_sec / 3.0
+
+
+def pick_snapshot(store, target, tol_sec):
+    """取时间戳离 target 最近、且偏差不超过 tol_sec 的那条快照。
+
+    偏差超限返回 None——宁可在面板上标注不可用，也不拿一个口径不同的数去凑。
+    """
+    best, best_gap = None, None
+    for snap in store:
+        gap = abs((parse_ts(snap["t"]) - target).total_seconds())
+        if gap > tol_sec:
+            continue
+        if best_gap is None or gap < best_gap:
+            best, best_gap = snap, gap
+    return best
