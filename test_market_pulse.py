@@ -531,15 +531,24 @@ def _state(**over):
         ],
         "verdict": ("同涨", "池内 34/38 上涨（89%）、4/38 下跌（11%）"),
         "pool_median": 1.66,
+        "pool_mean": 1.20,
         "dropped": 0,
     }
     base.update(over)
     return base
 
 
-def test_render_panel_has_all_three_blocks():
+def test_render_panel_has_expected_blocks():
+    """面板只留三块：速度、宽度、判定。
+
+    2026-08-10 用户要求精简：不再显示持仓票的排名和超额，
+    【相对强弱】整节移除。判定保留——它才是这个模块的核心产出，
+    内部仍需要知道持仓票是涨是跌，只是不把排名印出来。
+    """
     out = mp.render_panel(_state())
-    assert "【速度】" in out and "【宽度】" in out and "【相对强弱】" in out
+    assert "【速度】" in out and "【宽度】" in out and "【判定】" in out
+    assert "【相对强弱】" not in out
+    assert "排名" not in out and "超额" not in out
     assert "【判定】" in out
 
 
@@ -612,12 +621,10 @@ def test_render_panel_shows_dash_for_pool_outsider():
     定位到两行各自断言。
     """
     rows = [{"name": "长鑫科技", "speeds": [None] * 3, "dash": True}]
-    st = _state(rows=rows)
-    out = mp.render_panel(st).splitlines()
-    speed_line = [x for x in out if "长鑫科技" in x][0]
-    rank_line = [x for x in out if "长鑫科技" in x][-1]
-    assert "—" in speed_line and "不可用" not in speed_line
-    assert "不在池内" in rank_line
+    out = mp.render_panel(_state(rows=rows)).splitlines()
+    hits = [x for x in out if "长鑫科技" in x]
+    assert len(hits) == 1, "相对强弱节已移除，长鑫只应出现在速度栏一次"
+    assert "—" in hits[0] and "不可用" not in hits[0]
 
 
 def test_render_strip_handles_missing_excess():
@@ -652,10 +659,10 @@ def test_render_strip_within_width_limit():
     assert mp.display_width(out) <= 40
 
 
-def test_render_strip_contains_verdict_and_rank():
+def test_render_strip_contains_verdict():
+    """2026-08-10 精简后单行只留池子涨跌幅、涨跌家数、判定，不再有排名。"""
     out = mp.render_strip(_state())
     assert "同涨" in out
-    assert "17/38" in out
 
 
 def test_render_strip_when_unavailable():
@@ -859,3 +866,69 @@ def test_build_state_pool_outsider_still_uses_live_r():
                         live_r={"sh688825": -0.17})
     cx = [h for h in st["holdings"] if h["name"] == "长鑫科技"][0]
     assert cx["r"] == pytest.approx(-0.17)
+
+def test_render_panel_shows_pool_level():
+    """【宽度】节要给出池内整体涨跌幅。
+
+    中位数和平均数都给：2026-08-10 13:45 实测两者差 0.56 个百分点
+    （中位数 -3.18%、平均 -2.61%），去掉最强最弱各两只后中位数纹丝不动、
+    平均数会跟着极端票跑。所以中位数放在前面，平均数并列供参照。
+    """
+    out = mp.render_panel(_state())
+    assert "中位数" in out and "平均" in out
+    assert "+1.66%" in out          # pool_median
+    assert "+1.20%" in out          # pool_mean
+
+
+def test_render_panel_pool_level_handles_none():
+    """样本不足时中位数/平均数都是 None，不能格式化崩掉。"""
+    out = mp.render_panel(_state(pool_median=None, pool_mean=None, valid=0))
+    assert "【宽度】" in out
+
+
+def test_render_strip_has_no_rank():
+    """悬浮窗单行同样不再显示排名和超额。"""
+    out = mp.render_strip(_state())
+    assert "/38" not in out and "pp" not in out
+    assert "同涨" in out
+    assert mp.display_width(out) <= 40
+
+
+def test_render_strip_shows_pool_and_counts():
+    out = mp.render_strip(_state())
+    assert "+1.66%" in out
+    assert "34" in out and "4" in out
+
+
+def test_build_state_provides_pool_mean():
+    """build_state 要同时给出中位数和平均数。"""
+    st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
+    assert st["pool_median"] is not None
+    assert st["pool_mean"] is not None
+
+
+# --- 命令行参数 -----------------------------------------------------------
+
+def test_parse_args_default_is_oneshot():
+    assert mp.parse_args([]) is None
+
+
+def test_parse_args_watch_default_interval():
+    assert mp.parse_args(["--watch"]) == 15
+
+
+def test_parse_args_watch_custom_interval():
+    assert mp.parse_args(["--watch", "5"]) == 5
+
+
+def test_parse_args_watch_rejects_garbage():
+    """间隔不是正整数就抛，不静默用默认值——静默会让人以为设生效了。"""
+    with pytest.raises(ValueError):
+        mp.parse_args(["--watch", "abc"])
+    with pytest.raises(ValueError):
+        mp.parse_args(["--watch", "0"])
+
+
+def test_parse_args_rejects_unknown():
+    with pytest.raises(ValueError):
+        mp.parse_args(["--nope"])

@@ -7,6 +7,8 @@
 import datetime
 import json
 import os
+import sys
+import time
 import statistics as st
 import unicodedata
 import zoneinfo
@@ -302,6 +304,11 @@ def _pad_r(s, width):
 WINDOW_LABELS = {15: "15秒", 60: "1分钟", 300: "5分钟"}
 
 
+def _fmt_pct(v):
+    """涨跌幅显示，None 时给「—」而不是崩掉。"""
+    return "—" if v is None else f"{v:+.2f}%"
+
+
 def _fmt_speed(v, dash=False):
     """速度单元格。
 
@@ -340,22 +347,11 @@ def render_panel(state):
 
     br = state["breadth"]
     lines.append("【宽度】")
+    lines.append(f"  池内涨跌幅  中位数 {_fmt_pct(state.get('pool_median'))}"
+                 f"   平均 {_fmt_pct(state.get('pool_mean'))}")
     lines.append(f"  池内 上涨 {br['up']} / 平盘 {br['flat']} / 下跌 {br['down']}")
     lines.append(f"  最近 1 分钟翻向：涨转跌 {br['flip_down']} 只，"
                  f"跌转涨 {br['flip_up']} 只")
-    lines.append("")
-
-    lines.append("【相对强弱】")
-    for h in state["holdings"]:
-        place, total = h["rank"]
-        if place is None:
-            pos = "—（不在池内）" if not h.get("in_pool", True) else "—"
-        else:
-            pos = f"{place}/{total}（前 {place / total * 100:.0f}%）"
-        exc = "—" if h["excess"] is None else f"{h['excess']:+.2f}pp"
-        r_txt = "—" if h["r"] is None else f"{h['r']:+.2f}%"
-        lines.append("  " + _pad_l(h["name"], 10) + _pad_r(r_txt, 9)
-                     + "  超额(vs池) " + _pad_r(exc, 9) + "  排名 " + pos)
     lines.append("")
 
     got, why = state["verdict"]
@@ -368,21 +364,16 @@ def render_panel(state):
 def render_strip(state):
     """悬浮窗单行文案，显示宽度不超过 40。
 
-    速度三窗放不进一行，只在命令行面板出现。超限时优先砍池子涨跌幅，
-    保留判定和排名——那两个才是「要不要紧」的直接答案。
+    2026-08-10 用户要求精简：不再显示持仓票的排名和超额，只给池子整体
+    涨跌幅、涨跌家数和判定。判定保留，它才是「要不要紧」的直接答案。
     """
     got, _ = state["verdict"]
+    br = state["breadth"]
     if got is None:
         return "样本不足" if state["status"][0] == "ok" else "行情不可用"
-    br = state["breadth"]
-    h = state["holdings"][0] if state["holdings"] else None
-    if h is None:
-        return f"池{state['pool_median']:+.2f}% {br['up']}/{br['down']} {got}"
-    place, total = h["rank"]
-    tail = (f"你{h['excess']:+.2f}pp {place}/{total} {got}"
-            if h["excess"] is not None and place else f"你 — {got}")
-    full = f"池{state['pool_median']:+.2f}% {br['up']}/{br['down']}  {tail}"
-    return full if display_width(full) <= 40 else tail
+    full = (f"池{_fmt_pct(state.get('pool_median'))} "
+            f"{br['up']}涨{br['down']}跌 {got}")
+    return full if display_width(full) <= 40 else f"{br['up']}/{br['down']} {got}"
 
 
 def parse_pool_quotes(raw_quotes):
@@ -449,6 +440,8 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     rs_now = {c: v for c, v in cur.items() if v is not None}
     br = breadth(rs_now)
     pool_median, valid = aggregate(list(rs_now.values()))
+    _vals = [v for v in rs_now.values() if v is not None]
+    pool_mean = st.mean(_vals) if _vals else None
     live_r = live_r or dict(rs_now)
 
     rows = []
@@ -501,7 +494,7 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
             "status": status, "rows": rows, "breadth": br,
             "holdings": hold_rows, "verdict": verdict(br, first),
-            "pool_median": pool_median, "dropped": 0}
+            "pool_median": pool_median, "pool_mean": pool_mean, "dropped": 0}
 
 
 MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
@@ -522,14 +515,42 @@ def now_bj():
     return datetime.datetime.now(MARKET_TZ).replace(tzinfo=None)
 
 
-def main():
-    """命令行入口：读盘、组装、打印完整面板。"""
+WATCH_DEFAULT = 15      # --watch 不带参数时的刷新间隔，秒
+
+
+def parse_args(argv):
+    """解析命令行参数，返回刷新间隔（秒）或 None（单次运行）。
+
+    --watch        每 15 秒刷新
+    --watch 5      每 5 秒刷新
+
+    参数非法直接抛 ValueError，不静默退回默认值——静默会让人以为
+    自己设的间隔生效了，而实际上没有。
+    """
+    if not argv:
+        return None
+    if argv[0] != "--watch":
+        raise ValueError(f"未知参数: {argv[0]}；只支持 --watch [秒]")
+    if len(argv) == 1:
+        return WATCH_DEFAULT
+    if len(argv) > 2:
+        raise ValueError(f"参数过多: {argv[2:]}")
+    try:
+        n = int(argv[1])
+    except ValueError:
+        raise ValueError(f"刷新间隔要是正整数，收到 {argv[1]!r}") from None
+    if n < 1:
+        raise ValueError(f"刷新间隔要是正整数，收到 {n}")
+    return n
+
+
+def _snapshot_once():
+    """取一次数、落盘、返回渲染好的面板文本。"""
     import stock_watch as sw
 
     now = now_bj()
     rotate_store(now.strftime("%Y-%m-%d"))
-    codes = merge_codes(sw.load_config())
-    quotes = sw.fetch_quotes(codes)
+    quotes = sw.fetch_quotes(merge_codes(sw.load_config()))
     pool = parse_pool_quotes(quotes)
     snap = {"t": now.strftime(TS_FMT),
             "r": {c: v["r"] for c, v in pool.items() if c in POOL_CODES},
@@ -537,7 +558,26 @@ def main():
     append_store(snap)
     store = load_store(max(WINDOWS) * 2, now=now)
     live_r = {c: v["r"] for c, v in pool.items()}
-    print(render_panel(build_state(store, now, live_r=live_r)))
+    return render_panel(build_state(store, now, live_r=live_r))
+
+
+def main(argv=None):
+    """命令行入口。默认单次运行；--watch 常驻并定时重绘。"""
+    interval = parse_args(list(sys.argv[1:] if argv is None else argv))
+    if interval is None:
+        print(_snapshot_once())
+        return
+    print(f"每 {interval} 秒刷新一次，Ctrl+C 退出\n")
+    try:
+        while True:
+            panel = _snapshot_once()
+            # 先算好再清屏，取数失败时不会留下一个空屏幕
+            sys.stdout.write("\033[H\033[J")
+            print(panel)
+            print(f"\n（每 {interval} 秒刷新，Ctrl+C 退出）")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n已退出。")
 
 
 if __name__ == "__main__":
