@@ -208,13 +208,24 @@ def pick_snapshot(store, target, tol_sec):
     return best
 
 
+def is_trading_day(day):
+    """周一到周五算交易日。入参 "2026-08-10"。
+
+    **只排除周末，不含法定节假日**（春节、国庆这些还是会采到重复快照）。
+    要做全的话得维护一张交易日历，那是另一件事；周末已经占了非交易日的
+    绝大多数，先解决它。
+    """
+    return parse_ts(day + " 00:00:00").weekday() < 5
+
+
 def append_store(snap, path=STORE):
     """把一条快照追加落盘，返回是否真的写了。
 
     非交易时段直接跳过：午休和盘后行情不变，写进去只是一堆重复记录，
     还会污染速度窗口的取值。
     """
-    if not in_session(snap["t"].split(" ")[-1]):
+    day, hhmm = snap["t"].split(" ")
+    if not is_trading_day(day) or not in_session(hhmm):
         return False
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(snap, ensure_ascii=False) + "\n")
@@ -249,23 +260,30 @@ def load_store(seconds, now=None, path=STORE):
 
 
 def rotate_store(today, path=STORE):
-    """最后一条不是今天就清空，返回是否清空了。
+    """只保留 today 当天的记录，清掉其余，返回是否动过文件。
 
-    昨天的价格接到今天的序列上，会算出一个跨夜跳空的假速度。
+    2026-08-10 踩到的坑：原实现只比对最后一行的日期，而进程跨日运行时
+    最后一行恰好是今天，于是更早那几天的数据永远清不掉——文件从预估的
+    每天 1.7 MB 涨到 9 MB，里面混着 8/8、8/9 两个周末的重复快照。
+    改成逐行过滤，混了几天都能清干净。
+
+    昨天的涨跌幅接到今天的序列上会算出跨夜跳空的假速度，所以必须清。
     """
     if not os.path.exists(path):
         return False
     with open(path, encoding="utf-8") as fh:
         lines = [x for x in fh if x.strip()]
-    if not lines:
+    keep = []
+    for line in lines:
+        try:
+            if json.loads(line)["t"].split(" ")[0] == today:
+                keep.append(line)
+        except (ValueError, KeyError, IndexError):
+            continue          # 损坏行一并丢掉
+    if len(keep) == len(lines):
         return False
-    try:
-        last_day = json.loads(lines[-1])["t"].split(" ")[0]
-    except (ValueError, KeyError, IndexError):
-        last_day = None
-    if last_day == today:
-        return False
-    open(path, "w", encoding="utf-8").close()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(keep)
     return True
 
 

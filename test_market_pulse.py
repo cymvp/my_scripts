@@ -932,3 +932,51 @@ def test_parse_args_watch_rejects_garbage():
 def test_parse_args_rejects_unknown():
     with pytest.raises(ValueError):
         mp.parse_args(["--nope"])
+
+
+# --- 周末不采样 -----------------------------------------------------------
+
+def test_append_store_skips_weekend(tmp_path):
+    """周末休市不写盘。
+
+    2026-08-10 实测踩到：in_session 只看 HH:MM 不看星期，
+    周六周日在 9:30-11:30、13:00-15:00 照样判在场内，
+    把周五收盘价的重复快照当实时数据写了 8045 条。
+    """
+    pp = tmp_path / "s.jsonl"
+    sat = {"t": "2026-08-08 10:30:00", "r": {"sz300308": 2.35}, "idx": {}}
+    sun = {"t": "2026-08-09 10:30:00", "r": {"sz300308": 2.35}, "idx": {}}
+    assert mp.append_store(sat, path=str(pp)) is False
+    assert mp.append_store(sun, path=str(pp)) is False
+    assert not pp.exists()
+
+
+def test_append_store_writes_weekday(tmp_path):
+    """周一到周五的交易时段照常写。"""
+    pp = tmp_path / "s.jsonl"
+    mon = {"t": "2026-08-10 10:30:00", "r": {"sz300308": 2.35}, "idx": {}}
+    assert mp.append_store(mon, path=str(pp)) is True
+
+
+def test_is_trading_day():
+    assert mp.is_trading_day("2026-08-10") is True     # 周一
+    assert mp.is_trading_day("2026-08-07") is True     # 周五
+    assert mp.is_trading_day("2026-08-08") is False    # 周六
+    assert mp.is_trading_day("2026-08-09") is False    # 周日
+
+
+def test_rotate_store_clears_any_stale_day(tmp_path):
+    """文件里混了多天时全部清掉，不只看最后一行。
+
+    2026-08-10 实测踩到：原实现只比对最后一行的日期，而进程跨日运行时
+    最后一行恰好是今天，于是 8/8、8/9 两天的数据永远清不掉，
+    文件从预估的每天 1.7 MB 涨到 9 MB。
+    """
+    pp = tmp_path / "s.jsonl"
+    pp.write_text(
+        '{"t":"2026-08-08 10:00:00","r":{},"idx":{}}\n'
+        '{"t":"2026-08-09 10:00:00","r":{},"idx":{}}\n'
+        '{"t":"2026-08-10 10:00:00","r":{},"idx":{}}\n', encoding="utf-8")
+    assert mp.rotate_store("2026-08-10", path=str(pp)) is True
+    left = [x for x in pp.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(left) == 1 and "2026-08-10" in left[0]

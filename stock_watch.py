@@ -370,7 +370,7 @@ def _build_app():
             # --- 市场脉搏（见 docs/market_pulse/spec/）---
             self.pulse_text = None      # 横条末尾那个格子的标签
             self._pulse_strip = ""      # 最近一次算出来的单行文案
-            mp.rotate_store(mp.now_bj().strftime("%Y-%m-%d"))
+            self._pulse_day = None      # 上次清理过的日期，跨日时重清
 
             self._render_rows()
             self.refresh()
@@ -791,6 +791,12 @@ def _build_app():
             """把池子部分落盘并重算单行文案。任何异常都不能影响自选渲染。"""
             try:
                 now = mp.now_bj()      # 必须用北京时间，本机是 JST 快 1 小时
+                # 跨日清理必须每 tick 检查：进程会连着跑好几天，
+                # 只在启动时清一次的话，隔夜数据永远留在文件里。
+                today = now.strftime("%Y-%m-%d")
+                if self._pulse_day != today:
+                    mp.rotate_store(today)
+                    self._pulse_day = today
                 pool = mp.parse_pool_quotes(quotes)
                 snap = {"t": now.strftime(mp.TS_FMT),
                         "r": {c: v["r"] for c, v in pool.items()
