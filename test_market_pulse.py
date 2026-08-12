@@ -15,8 +15,8 @@ def test_pool_codes_has_38():
     assert list(mp.POOL_CODES) == list(ig.POOL)
 
 
-def test_windows_are_15_60_300():
-    assert mp.WINDOWS == (15, 60, 300)
+def test_windows_are_10_60_300():
+    assert mp.WINDOWS == (10, 60, 300)
 
 
 # --- merge_codes 合并去重 --------------------------------------------------
@@ -145,6 +145,172 @@ def test_aggregate_uses_median_not_mean():
     """
     val, _ = mp.aggregate([0.1, 0.1, 0.1, 20.0])
     assert val == pytest.approx(0.1)      # 中位数 0.1；平均数会是 5.075
+
+
+# --- sector_mean 赛道均值 --------------------------------------------------
+
+def test_sector_mean_basic():
+    assert mp.sector_mean([1.0, 2.0, 3.0]) == pytest.approx(2.0)
+
+
+def test_sector_mean_drops_none():
+    """缺数据的成员不参与平均，不当 0 计。"""
+    assert mp.sector_mean([1.0, None, 3.0]) == pytest.approx(2.0)
+
+
+def test_sector_mean_all_none():
+    assert mp.sector_mean([None, None]) is None
+
+
+def test_sector_mean_empty():
+    assert mp.sector_mean([]) is None
+
+
+def test_sector_mean_does_not_collapse_to_middle_member():
+    """三只成员时不能退化成中间那只自己。
+
+    2026-08-11 13:41:12 实测：光模块三只 新易盛 +4.542 / 中际旭创 +2.942 /
+    天孚通信 +0.883，中位数正好等于中际旭创，赛道行与个股行逐位相同、
+    这个对比失去意义。当天 3800 条快照里这个重合率是 100%。
+    """
+    vals = [4.542, 2.942, 0.883]
+    assert mp.sector_mean(vals) == pytest.approx(2.789)
+    assert mp.sector_mean(vals) != pytest.approx(2.942)
+
+
+def test_sector_key_uses_mean(monkeypatch):
+    """_sector_key 走均值：赛道速度不再等于中间那只成员的速度。"""
+    snap_a = {"r": {"a": 4.542, "b": 2.942, "c": 0.883}}
+    snap_b = {"r": {"a": 4.642, "b": 2.942, "c": 0.883}}
+    codes = ["a", "b", "c"]
+    sec_speed = mp.speed(mp._sector_key(snap_b, codes),
+                         mp._sector_key(snap_a, codes))
+    stock_speed = mp.speed(snap_b["r"]["b"], snap_a["r"]["b"])
+    assert stock_speed == pytest.approx(0.0)       # 中际旭创没动
+    assert sec_speed == pytest.approx(0.1 / 3)     # 但赛道动了
+
+
+# --- sparkline 速率曲线 ----------------------------------------------------
+
+def test_spark_levels_are_odd_so_zero_has_its_own_glyph():
+    """必须是奇数档，中间那格专门表示 0。
+
+    速度是有符号的（可正可负），偶数档时 0 会落在两格之间，
+    「没动」和「微涨」会画成同一个字符。
+    """
+    assert len(mp.SPARK_LEVELS) % 2 == 1
+
+
+def test_sparkline_zero_series_is_all_center():
+    """全 0 的速度序列画成一条中线，不是空的也不是贴底。"""
+    center = mp.SPARK_LEVELS[len(mp.SPARK_LEVELS) // 2]
+    assert mp.sparkline([0.0, 0.0, 0.0], scale=1.0) == center * 3
+
+
+def test_sparkline_max_and_min_hit_the_ends():
+    assert mp.sparkline([1.0], scale=1.0) == mp.SPARK_LEVELS[-1]
+    assert mp.sparkline([-1.0], scale=1.0) == mp.SPARK_LEVELS[0]
+
+
+def test_sparkline_clamps_beyond_scale():
+    """超出刻度不抛错、贴到端点——刻度是全表共用的，个别行会超。"""
+    assert mp.sparkline([5.0], scale=1.0) == mp.SPARK_LEVELS[-1]
+    assert mp.sparkline([-5.0], scale=1.0) == mp.SPARK_LEVELS[0]
+
+
+def test_sparkline_missing_point_is_a_visible_gap():
+    """缺采样画成「·」，不画成中线——中线的意思是「没动」，两者不能混。"""
+    out = mp.sparkline([1.0, None, -1.0], scale=1.0)
+    assert out == mp.SPARK_LEVELS[-1] + mp.SPARK_GAP + mp.SPARK_LEVELS[0]
+
+
+def test_sparkline_all_missing():
+    assert mp.sparkline([None, None], scale=1.0) == mp.SPARK_GAP * 2
+
+
+def test_sparkline_scale_zero_or_none_gives_gaps():
+    """全表都没动时刻度是 0，不能拿它做除数。"""
+    assert mp.sparkline([0.0, 0.0], scale=0.0) == mp.SPARK_GAP * 2
+    assert mp.sparkline([0.0], scale=None) == mp.SPARK_GAP
+
+
+def test_spark_scale_is_shared_max_abs():
+    """刻度 = 所有行所有点里绝对值最大的那个。
+
+    共用刻度而不是每行自己缩放：各自缩放会把速度 0.01pp 的安静行
+    画得和 0.5pp 的剧烈行一样，而这张表存在的意义就是横向比较。
+    """
+    assert mp.spark_scale([[0.1, -0.2], [0.5, None]]) == pytest.approx(0.5)
+
+
+def test_spark_scale_all_none():
+    assert mp.spark_scale([[None], [None, None]]) is None
+
+
+def test_spark_scale_all_zero():
+    """全 0 时返回 None，让上层画成缺口而不是除零。"""
+    assert mp.spark_scale([[0.0, 0.0]]) is None
+
+
+def test_spark_scale_empty():
+    assert mp.spark_scale([]) is None
+
+
+def test_speed_series_walks_back_in_time():
+    """序列按时间从左到右，最右是最新。
+
+    构造 13:24:00 起每 10 秒一条、涨跌幅每条 +0.10：10 秒窗口的速度
+    恒为 +0.10，序列 3 点全是 +0.10。
+    """
+    snaps = [{"t": f"2026-08-11 13:24:{s:02d}",
+              "r": {"a": 1.0 + i * 0.10}, "idx": {}}
+             for i, s in enumerate(range(0, 60, 10))]
+    out = mp._speed_series(snaps, mp.parse_ts("2026-08-11 13:24:50"),
+                           lambda s: s["r"].get("a"),
+                           window=10, points=3, step=10)
+    assert out == [pytest.approx(0.10)] * 3
+
+
+def test_speed_series_gives_none_where_no_snapshot():
+    """历史不够长的左侧补 None，不补 0。"""
+    snaps = [{"t": "2026-08-11 13:24:50", "r": {"a": 1.0}, "idx": {}},
+             {"t": "2026-08-11 13:25:00", "r": {"a": 1.2}, "idx": {}}]
+    out = mp._speed_series(snaps, mp.parse_ts("2026-08-11 13:25:00"),
+                           lambda s: s["r"].get("a"),
+                           window=10, points=3, step=10)
+    assert out[:2] == [None, None]
+    assert out[2] == pytest.approx(0.2)
+
+
+def test_render_panel_has_spark_column():
+    st = _state()
+    out = mp.render_panel(st)
+    assert "最近5分钟" in out
+
+
+def test_render_panel_spark_header_states_full_height():
+    """满格代表多少 pp 必须打出来，否则曲线高度没有含义。"""
+    st = _state()
+    st["spark_scale"] = 0.25
+    out = mp.render_panel(st)
+    assert "满格±0.25pp" in out
+
+
+def test_render_panel_spark_scale_none_says_so():
+    st = _state()
+    st["spark_scale"] = None
+    out = mp.render_panel(st)
+    assert "最近5分钟" in out
+
+
+def test_render_panel_pool_outsider_spark_is_dash():
+    """池外票不落盘，曲线是结构性缺失，画「—」不是缺口点。"""
+    st = _state()
+    for row in st["rows"]:
+        if row.get("dash"):
+            row["spark"] = "—"
+    out = mp.render_panel(st)
+    assert "—" in out
 
 
 # --- breadth 宽度 ----------------------------------------------------------
@@ -365,7 +531,7 @@ def test_pick_snapshot_empty_store():
 
 def test_pick_snapshot_tolerance_is_third_of_window():
     """15 秒窗口的容差是 5 秒，300 秒窗口是 100 秒。"""
-    assert mp.window_tolerance(15) == pytest.approx(5.0)
+    assert mp.window_tolerance(10) == pytest.approx(10 / 3.0)
     assert mp.window_tolerance(60) == pytest.approx(20.0)
     assert mp.window_tolerance(300) == pytest.approx(100.0)
 
@@ -495,7 +661,7 @@ def test_pad_l_aligns_by_display_width(s, width):
 
 
 def test_pad_r_aligns_by_display_width():
-    assert mp.display_width(mp._pad_r("15秒", 9)) == 9
+    assert mp.display_width(mp._pad_r("10秒", 9)) == 9
     assert mp.display_width(mp._pad_r("-0.21", 9)) == 9
 
 
@@ -597,7 +763,7 @@ def test_render_panel_window_labels_are_human_readable():
     直接削弱它存在的理由。spec §6.1 的样例就是这么写的。
     """
     out = mp.render_panel(_state())
-    assert "15秒" in out and "1分钟" in out and "5分钟" in out
+    assert "10秒" in out and "1分钟" in out and "5分钟" in out
     assert "60秒" not in out and "300秒" not in out
 
 
@@ -722,11 +888,15 @@ def test_build_state_marks_all_windows_unavailable_when_not_running():
 
 
 def _two_snaps():
-    """构造两条快照：13:24:00 和 13:24:15，中际旭创从 +2.51 掉到 +2.30。"""
+    """构造两条快照：13:24:05 和 13:24:15，中际旭创从 +2.51 掉到 +2.30。
+
+    间隔取 10 秒是为了落进最短窗口。窗口 10 秒时目标点是 13:24:05、
+    容差 3.3 秒，隔 15 秒的快照够不着，speeds[0] 会是 None。
+    """
     pool = {c: 1.0 for c in mp.POOL_CODES}
     a = dict(pool, sz300308=2.51, sz301526=7.00)
     b = dict(pool, sz300308=2.30, sz301526=7.24)
-    return [{"t": "2026-08-07 13:24:00", "r": a, "idx": {"sz399006": 1.70}},
+    return [{"t": "2026-08-07 13:24:05", "r": a, "idx": {"sz399006": 1.70}},
             {"t": "2026-08-07 13:24:15", "r": b, "idx": {"sz399006": 1.75}}]
 
 
@@ -744,8 +914,8 @@ def test_build_state_rows_in_spec_order():
     assert names[6] == "创业板指"
 
 
-def test_build_state_computes_15s_speed():
-    """15 秒窗口：中际旭创从 +2.51 掉到 +2.30，速度 −0.21 pp。"""
+def test_build_state_computes_10s_speed():
+    """10 秒窗口：中际旭创从 +2.51 掉到 +2.30，速度 −0.21 pp。"""
     st = mp.build_state(_two_snaps(), mp.parse_ts("2026-08-07 13:24:15"))
     assert st["rows"][0]["speeds"][0] == pytest.approx(-0.21)
 

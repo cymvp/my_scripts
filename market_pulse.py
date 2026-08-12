@@ -34,7 +34,7 @@ IDX_NAMES = {"sz399006": "创业板指", "sh000001": "上证", "sh000688": "科�
 HOLD_CODES = ("sz300308", "sz301526", "sh688825")
 HOLD_NAMES = {"sh688825": "长鑫科技"}
 
-WINDOWS = (15, 60, 300)      # 速度窗口，单位秒
+WINDOWS = (10, 60, 300)      # 速度窗口，单位秒
 MIN_VALID = 20               # 池内有效票少于这个数就不出判定
 VERDICT_RATIO = 0.60         # 判定的涨跌占比门槛，闭区间
 STALE_SEC = 60               # 最后一条快照超过这么久，视为采集未运行
@@ -97,6 +97,23 @@ def aggregate(values):
     if not valid:
         return None, 0
     return st.median(valid), len(valid)
+
+
+def sector_mean(values):
+    """一个赛道的平均涨跌幅，缺数据的成员不参与。
+
+    赛道只用平均数、不用 aggregate 的中位数：赛道成员少（14 个赛道里 12 个
+    只有 ≤3 只），而 3 个数的中位数就是中间那只票自己。2026-08-11 实测，
+    中际旭创在光模块三只里全天 3800 条快照 100% 都是中间那只，于是赛道行
+    与个股行逐位相同——面板要回答的「独跌还是同跌」在这一行上失效了。
+
+    池子层面仍用 aggregate 的中位数：38 只里有涨停跌停的极端票，那里平均数
+    会被拉偏，而成员多不会退化。
+    """
+    valid = [v for v in values if v is not None]
+    if not valid:
+        return None
+    return st.fmean(valid)
 
 
 def breadth(rs_now, rs_past=None):
@@ -188,7 +205,8 @@ def window_tolerance(window_sec):
     """窗口取值的允许偏差 = 窗口长度的三分之一。
 
     采样点不会正好落在 t − w 上，所以要给一个容差。取三分之一是因为
-    3 秒采样下，15 秒窗口的容差 5 秒刚好覆盖一到两个采样间隔。
+    3 秒采样下，最短的 10 秒窗口容差 3.3 秒刚好覆盖一个采样间隔——
+    再窄就会因为错过一次采样而频繁标「不可用」。
     """
     return window_sec / 3.0
 
@@ -319,7 +337,68 @@ def _pad_r(s, width):
     return " " * max(0, width - display_width(s)) + s
 
 
-WINDOW_LABELS = {15: "15秒", 60: "1分钟", 300: "5分钟"}
+WINDOW_LABELS = {10: "10秒", 60: "1分钟", 300: "5分钟"}
+
+# 速率曲线：把「最近 5 分钟这一行的速度」画成一列火柴图，补上三列静态
+# 数字看不出的东西——同样是 -0.10 pp，一直在掉和刚从 +0.30 掉下来
+# 是两回事，而现在的表读不出这个区别。
+SPARK_LEVELS = "▁▂▃▄▅▆▇"   # 奇数档：正中那格专门表示速度 0
+SPARK_GAP = "·"             # 该点没采到，和「速度为 0」必须分开
+SPARK_SPAN = 300            # 画多长的历史，秒（与最右那列窗口对齐）
+SPARK_POINTS = 20           # 画多少个点，300/20 = 每 15 秒一点
+SPARK_WINDOW = 10           # 每个点算哪个窗口的速度（最灵敏的那一列）
+
+
+def spark_scale(series_list):
+    """全表共用的纵向刻度 = 所有行所有点里绝对值最大的那个。
+
+    共用刻度而不是每行自己缩放：各自缩放会把速度只有 0.01 pp 的安静行
+    画得和 0.5 pp 的剧烈行一样高，而这张表存在的意义就是横向比较
+    「我的票 vs 赛道 vs 池子」。全 0 或全缺时返回 None，让上层画成缺口，
+    不拿 0 去做除数。
+    """
+    vals = [abs(v) for s in series_list for v in s if v is not None]
+    top = max(vals) if vals else 0.0
+    return top if top > 0 else None
+
+
+def sparkline(values, scale):
+    """把一串有符号的速度画成火柴图，0 落在正中那格。
+
+    scale 是满格代表的 pp 数（见 spark_scale）。超出刻度贴到端点而不抛错——
+    刻度是全表共用的，个别行超出是正常的。
+    """
+    if not scale:
+        return SPARK_GAP * len(values)
+    top = len(SPARK_LEVELS) - 1
+    mid = top / 2.0
+    out = []
+    for v in values:
+        if v is None:
+            out.append(SPARK_GAP)
+            continue
+        pos = mid + max(-1.0, min(1.0, v / scale)) * mid
+        out.append(SPARK_LEVELS[int(round(pos))])
+    return "".join(out)
+
+
+def _speed_series(store, now, key_fn, window=SPARK_WINDOW,
+                  points=SPARK_POINTS, step=None):
+    """一行在最近 points×step 秒里的速度序列，左旧右新。
+
+    每个点算的是「截至该时刻、跨度 window 秒」的速度，和速度表最左那列同口径。
+    取不到快照的点补 None 而不补 0——0 的意思是「没动」。
+    """
+    if step is None:
+        step = SPARK_SPAN // points
+    tol = window_tolerance(window)
+    out = []
+    for i in range(points - 1, -1, -1):
+        end = now - datetime.timedelta(seconds=i * step)
+        a = pick_snapshot(store, end, tol)
+        b = pick_snapshot(store, end - datetime.timedelta(seconds=window), tol)
+        out.append(speed(key_fn(a) if a else None, key_fn(b) if b else None))
+    return out
 
 
 def _fmt_pct(v):
@@ -352,13 +431,18 @@ def render_panel(state):
              f"{state['valid']}/{state['total']}", ""]
 
     lines.append("【速度】单位 pp（该窗口内涨跌幅的变化量）")
+    sc = state.get("spark_scale")
+    spark_head = (f"最近5分钟（{SPARK_WINDOW}秒速度，"
+                  + (f"满格±{sc:.2f}pp）" if sc else "全表未动或无数据）"))
     lines.append("  " + _pad_l("", 16)
-                 + "".join(_pad_r(WINDOW_LABELS[w], 9) for w in WINDOWS))
+                 + "".join(_pad_r(WINDOW_LABELS[w], 9) for w in WINDOWS)
+                 + "  " + spark_head)
     for row in state["rows"]:
         dash = row.get("dash", False)
         lines.append("  " + _pad_l(row["name"], 16)
                      + "".join(_pad_r(_fmt_speed(v, dash), 9)
-                               for v in row["speeds"]))
+                               for v in row["speeds"])
+                     + "  " + row.get("spark", ""))
     if state["status"][0] != "ok":
         lines.append(f"  {state['status'][1]}")
     lines.append("")
@@ -441,8 +525,8 @@ def _speeds_for(store, now, key_fn):
 
 
 def _sector_key(snap, codes):
-    """一个赛道在某条快照上的中位涨跌幅。"""
-    return aggregate([snap["r"].get(c) for c in codes])[0]
+    """一个赛道在某条快照上的平均涨跌幅。"""
+    return sector_mean([snap["r"].get(c) for c in codes])
 
 
 def build_state(store, now, holdings=HOLD_CODES, live_r=None):
@@ -468,8 +552,7 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
         rows.append({"name": ig.POOL.get(code, HOLD_NAMES.get(code, code)),
                      # 池外票不落盘，速度是结构性缺失，渲染成「—」不是「不可用」
                      "dash": code not in POOL_CODES,
-                     "speeds": _speeds_for(store, now,
-                                           lambda s, c=code: s["r"].get(c))})
+                     "key": (lambda s, c=code: s["r"].get(c))})
     # 二、持仓票所属赛道各一行，同赛道只出一次，池外票没有赛道直接跳过
     seen_sectors = []
     for code in holdings:
@@ -479,17 +562,27 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     for sec in seen_sectors:
         members = [c for c, s in ig.SECTOR.items() if s == sec]
         rows.append({"name": f"{sec}({len(members)}只)",
-                     "speeds": _speeds_for(store, now,
-                                           lambda s, m=members: _sector_key(s, m))})
+                     "key": (lambda s, m=members: _sector_key(s, m))})
     # 三、科技池
     rows.append({"name": f"科技池({valid}只)",
-                 "speeds": _speeds_for(
-                     store, now,
-                     lambda s: aggregate(list(s["r"].values()))[0])})
+                 "key": (lambda s: aggregate(list(s["r"].values()))[0])})
     # 四、创业板指
     rows.append({"name": IDX_NAMES["sz399006"],
-                 "speeds": _speeds_for(store, now,
-                                       lambda s: s["idx"].get("sz399006"))})
+                 "key": (lambda s: s["idx"].get("sz399006"))})
+
+    # 每行的三个窗口速度与最近 5 分钟的速度序列，都从同一个 key 取值，
+    # 保证曲线和最左那列是同一个口径。
+    for row in rows:
+        row["speeds"] = _speeds_for(store, now, row["key"])
+        row["series"] = (None if row.get("dash")
+                         else _speed_series(store, now, row["key"]))
+    # 刻度全表共用，所以必须等所有行的序列都算完才能定（见 spark_scale）
+    scale = spark_scale([r["series"] for r in rows if r["series"]])
+    for row in rows:
+        # 池外票不落盘，整条曲线是结构性缺失，和「采到了但没动」不是一回事
+        row["spark"] = ("—" if row["series"] is None
+                        else sparkline(row["series"], scale))
+        del row["key"]
 
     hold_rows = []
     all_rs = list(rs_now.values())
@@ -512,7 +605,8 @@ def build_state(store, now, holdings=HOLD_CODES, live_r=None):
     return {"ts": now.strftime(TS_FMT), "valid": valid, "total": len(POOL_CODES),
             "status": status, "rows": rows, "breadth": br,
             "holdings": hold_rows, "verdict": verdict(br, first),
-            "pool_median": pool_median, "pool_mean": pool_mean, "dropped": 0}
+            "pool_median": pool_median, "pool_mean": pool_mean, "dropped": 0,
+            "spark_scale": scale}
 
 
 MARKET_TZ = zoneinfo.ZoneInfo("Asia/Shanghai")
