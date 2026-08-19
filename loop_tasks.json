@@ -10,54 +10,54 @@
       "name": "market_advisor_morning",
       "cron": "15 9 * * 1-5",
       "prompt": "/ycui_market_advisor 早盘模式：A 股开盘方向预测，并按 skill 中的早盘流程发送 Slack。注意：本任务的目标执行时刻是 8:45 BJT，此时集合竞价（9:15-9:25 BJT）尚未开始，新浪返回的现价为 0、买一档为空——**不要读竞价数据、不要把昨收当竞价价**，方向判断只用外盘信号（NQ 夜盘、KOSPI 早盘、SK海力士/三星/台积电）。若需要竞价验证，在 9:20 BJT 之后另行调用。 **KOSPI 必须用新浪 znb_KOSPI 取真值**——morning_open_forecast.py 走 Yahoo ^KS11，prev_close 落后一到两个交易日，2026-08-03 至 08-07 连续五天读错、其中三天方向反；08-10 那次基本对上（差 0.20pp），但那可能只是周末隔了两天恰好赶上，机制没修，仍以新浪为准。**执行前先确认今天是否已经跑过一次**：若本日已发出早盘报告，不要重复发 Slack，只在对话里说明重复触发。",
-      "job_id": "21901aaf",
+      "job_id": "79887d67",
       "created": "2026-07-27",
       "desc": "交易日 8:45 BJT(=9:45 JST，cron 9:15 JST 已补偿 +30min 执行延迟) market advisor 早盘模式。2026-08-03 从 9:12 BJT 提前到 8:45 BJT（用户要求）。代价：8:45 BJT 集合竞价未开始，无法做竞价验证，方向判断只剩外盘信号；morning_open_forecast.py 的设计窗口 9:10-9:25 BJT 也在此之后，但 KOSPI 已开盘 45 分钟（8:00 BJT 开）、NQ 期货实时，方向输出仍可用。",
-      "prev_job_id": "36c11051",
+      "prev_job_id": "21901aaf",
       "active": true,
-      "rebuilt": "2026-08-16"
+      "rebuilt": "2026-08-19"
     },
     {
       "name": "market_advisor_close",
       "cron": "15 15 * * 1-5",
       "prompt": "/ycui_market_advisor 尾盘模式：给出持有/减仓/清仓建议。运行完成后，把完整报告（市场快照 + 全球热点摘要 + 今晚事件清单 + 逐票建议 + 一句话总结，控制在 2900 字符内）发送到 Slack：webhook 读取顺序为环境变量 SLACK_WEBHOOK_URL → 本地文件 ~/.slack_webhook_url（webhook 是密钥，绝不写入 my_scripts 公开仓库的任何文件）。用 mrkdwn section block POST。webhook 缺失或发送失败时在对话中明确说明，不要静默。微信通道已失效不要尝试。 **KOSPI 必须用新浪 znb_KOSPI 取真值**，不要引用 open_gap_forecast.py 的 KOSPI 数字（Yahoo prev_close 落后一到两个交易日，8/03~8/07 连续五天读错）。**长鑫科技的幅度风险数字要先做一致性检查**：若脚本同时给出「低波动期」和「超±2%概率≥50%」这类互相矛盾的组合，说明 5 日波动率被前几日的异常平静压低、样本不可用，改用当日实际振幅并明确说明。**执行前先确认今天是否已经跑过一次**：若本日已发出尾盘报告，不要重复发 Slack，只在对话里说明重复触发。",
-      "job_id": "e96e133c",
+      "job_id": "aa3a31fa",
       "created": "2026-07-27",
       "desc": "交易日 14:45 BJT(=15:45 JST) market advisor 尾盘模式：收盘前卖出顾问并发 Slack。替代原 close_advisor",
-      "prev_job_id": "6908f9ad",
+      "prev_job_id": "e96e133c",
       "active": true,
-      "rebuilt": "2026-08-16"
+      "rebuilt": "2026-08-19"
     },
     {
       "name": "ycui_sync",
       "cron": "0 21 * * *",
       "prompt": "/ycui_sync",
-      "job_id": "8404a3f5",
+      "job_id": "5efa5575",
       "created": "2026-07-27",
       "desc": "每天 21:00 同步 Claude 数据 + my_data + my_scripts",
-      "prev_job_id": "cbb95901",
+      "prev_job_id": "8404a3f5",
       "active": true,
-      "rebuilt": "2026-08-16"
+      "rebuilt": "2026-08-19"
     },
     {
       "name": "daily_memory",
       "cron": "0 23 * * *",
       "prompt": "/ycui-daily-memory",
-      "job_id": "6bc11f21",
+      "job_id": "ba8e2718",
       "created": "2026-07-27",
       "desc": "每天 23:00 生成当日工作记忆",
-      "prev_job_id": "8550572b",
+      "prev_job_id": "6bc11f21",
       "active": true,
-      "rebuilt": "2026-08-16"
+      "rebuilt": "2026-08-19"
     },
     {
       "name": "loop_checker",
       "cron": "37 9 */3 * *",
       "prompt": "这是 loop 任务自愈检查。读取 ~/projects/my_scripts/loop_tasks.json，用 CronList 对比其中 tasks 列表，按两条判据处理：① 凡是 json 里登记但 CronList 中已不存在的任务，用 CronCreate 按登记的 cron 和 prompt 原样重建；② **凡是 created 或 rebuilt 日期距今已满 4 天的任务，即使还健在也主动删除重建续期**（含本检查任务自身）。理由：所有任务 7 天到期，而本检查每 3 天才跑一次，靠「缺失才重建」赶不上——最后一次触发总在到期前 3 天内，那一轮会看到一切正常然后集体消失。重建后把新的 job id 和重建时间更新回 loop_tasks.json，并简要汇报重建了哪些、为什么（缺失还是续期）。全部健在且都未满 4 天则只回一句\"loop 任务全部健在，无需续期\"。",
-      "job_id": "60dc5cfe",
+      "job_id": "d4c18fbc",
       "created": "2026-07-27",
-      "rebuilt": "2026-08-16",
-      "prev_job_id": "0448a60e",
+      "rebuilt": "2026-08-19",
+      "prev_job_id": "60dc5cfe",
       "desc": "每 3 天（每月 1/4/7...日 9:37）核对并重建失效的 loop 任务。2026-08-01 提前重建：原 f7deb560 建于 7/27、8/3 到期，而按 cron 下次自检要到 8/4，会错过自己的续期窗口 2026-08-06：判据从「只补缺失」改为「缺失的补 + 满 4 天主动续期」，根治 */3 触发节奏与 7 天有效期不对齐导致的集体失效风险。",
       "active": true
     },
@@ -65,7 +65,7 @@
       "name": "intraday_daily",
       "cron": "0 16 * * 1-5",
       "prompt": "交易日收盘后的日内数据流水线，两步串联：第一步 cd ~/projects/my_scripts && python3 intraday_collector.py（抓当天 30 分钟 K 线并追加）；第二步 python3 intraday_guide.py build（读仓库 + 抓日线，重算表 A/B/D/E）。报告：新增多少条、38 只全齐的交易日累计多少天、日线和 30 分钟各多少股票日、表 A 填满几格。若第一步输出「跳过未收盘的日期」，说明触发太早，报告并提醒调整 cron。若某只票取数失败，列出票名和原因。重算完抽查「下跌 × 6~8%」这一整行（−1%/−2%/−3%/−5% 与 +3%/+5%）与 ~/projects/my_data/trading/查表手册.md 第 115 行对照，任何一列偏差超过 1 个百分点都要报告并列出偏差方向。**注意该行文档值已知过期且偏差在持续扩大**（8/5 到 8/7 三天里 −2% 那列从 1.09pp 走到 2.52pp），报告时说明是文档过期而非数据异常。不要做其他分析，不要给方向判断。",
-      "job_id": "03e7feee",
+      "job_id": "e5a0fb30",
       "active": true,
       "created": "2026-08-03",
       "replaces": [
@@ -85,46 +85,46 @@
         }
       ],
       "desc": "合并原 intraday_collector（每交易日）和 intraday_baseline_rebuild（每周六）。合并理由：第二步的输入就是第一步的输出，分开跑还错开一周不合逻辑——实测表格晚刷新一周，最大格子差 5.5 个百分点（下跌×>8% 的 −3% 触发概率 58.3% 对 63.8%），而那一格样本只有 566 个、正是当前持仓所在的格子。每天重算多花约 2 分钟，把最大误差从 5.5pp 压到 1.4pp。cron 时点：本机 JST 16:00 触发 + 实测约 30 分钟延迟 ≈ 北京 15:30，收盘后半小时。**原 intraday_collector 的 22 15 会在北京 14:52 触发，收盘前 8 分钟抓，会把残缺的末根 K 永久写进仓库且不报错**——已在代码层加 should_write() 兜底：北京时间不到 15:05 不写当天数据。容错：新浪给的是最近 128 个交易日的滚动窗口，日常取 240 根覆盖 30 个交易日，漏跑 29 天以内下次自动补齐；漏更多跑 --backfill 可补到 128 天；只有连续漏超过 128 个交易日才会永久丢数据。",
-      "rebuilt": "2026-08-16",
-      "prev_job_id": "d9484c5f"
+      "rebuilt": "2026-08-19",
+      "prev_job_id": "03e7feee"
     },
     {
       "name": "sector_morning_0930",
       "cron": "0 10 * * 1-5",
       "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 09:30 BJT。",
-      "job_id": "543d7666",
+      "job_id": "b8df55eb",
       "created": "2026-08-06",
       "desc": "交易日 9:30 BJT 早盘板块播报 → Slack。cron 10:00 JST = 目标 9:30 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
       "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
-      "rebuilt": "2026-08-16",
-      "prev_job_id": "427a00c1"
+      "rebuilt": "2026-08-19",
+      "prev_job_id": "543d7666"
     },
     {
       "name": "sector_morning_0945",
       "cron": "15 10 * * 1-5",
       "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 09:45 BJT。",
-      "job_id": "0f4e072f",
+      "job_id": "c9b34f51",
       "created": "2026-08-06",
       "desc": "交易日 9:45 BJT 早盘板块播报 → Slack。cron 10:15 JST = 目标 9:45 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
       "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
-      "rebuilt": "2026-08-16",
-      "prev_job_id": "24cfdcbb"
+      "rebuilt": "2026-08-19",
+      "prev_job_id": "0f4e072f"
     },
     {
       "name": "sector_morning_1000",
       "cron": "30 10 * * 1-5",
       "prompt": "运行 `python3 ~/projects/my_scripts/sector_morning_slack.py`，它会抓同花顺行业板块 + 新浪概念板块，取涨幅前 5、每个板块给前 3 只龙头，外加主题 ETF 看板，然后自己发 Slack。**脚本自己发 Slack，不要再重复发一遍。**跑完后把输出贴在对话里即可；若脚本打印「跳过：…」说明未开盘或成交额过低，属正常，不要重试。脚本内部已判交易日（周末 + HOLIDAYS 表），非交易日会自己退出。 本任务目标执行时刻 10:00 BJT。",
-      "job_id": "0b2e3e15",
+      "job_id": "e3015a22",
       "created": "2026-08-06",
       "desc": "交易日 10:00 BJT 早盘板块播报 → Slack。cron 10:30 JST = 目标 10:00 BJT（+1h 时区换算，−30min 延迟补偿）。2026-08-05 原用 macOS launchd 实现（com.ycui.sector-morning），已于 2026-08-06 卸载改入本文件统一管理。脚本已实测连续两日三档全部触发、Slack 全部 200。",
       "active": true,
       "_impl_note": "这是三条任务里唯一不需要 Claude 做判断的——脚本自包含、自己发 Slack。loop agent 只需执行并回贴输出。webhook 从 ~/.config/ycui/slack.json 读（权限 600），不读环境变量，因为定时执行环境不继承 shell env。",
-      "rebuilt": "2026-08-16",
-      "prev_job_id": "ee6dd8a6"
+      "rebuilt": "2026-08-19",
+      "prev_job_id": "0b2e3e15"
     }
   ],
   "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
-  "_status": "2026-08-16 上午（loop_checker 自愈检查触发）：**判据 ② 第二次生效，9 条全量续期**。检查时 9 条全部健在、CronList 与登记逐条对上（判据 ① 无缺失），但 rebuilt 都是 2026-08-10、距今满 6 天，而到期日正是次日 2026-08-17——这正是 08-13 那轮预判并留出余量的场景（当时距重建仅 3 天、未满 4 天，故未续期，并记录「下次 8/16 距重建 6 天会触发续期，留 1 天余量」，本轮如期兑现）。续期后到期日顺延至 2026-08-23。旧 id 见各条 prev_job_id。**本轮 prompt 全部原样重建、一字未改**——执行中曾顺手在早盘那条补入 08-13/08-14 两次 KOSPI 偏差记录（分别高 4.53pp、3.35pp），随即判定超出「原样重建」的指令范围，已删除该 job（3c3c6e6d）并用登记原文重建，prompt 改动另行提请崔扬确认。提醒：CronList 按会话隔离，起任务的只能有一个会话。"
+  "_status": "2026-08-19 上午（崔扬手动要求重建）：9 条全量删除重建，prompt 原样未改。重建前状态是全部健在、rebuilt=2026-08-16（距今 3 天、未满判据②的 4 天），10:07 那次自愈检查刚判过「无需续期」。本次是人工触发，起因是当天两条任务严重错时：早盘任务目标 8:45 却在 10:56 触发、尾盘任务目标 14:45 却在 10:57 触发——两条挤在同一分钟，是队列积压后集中释放（harness cron 只在 REPL 空闲时触发）。同日 9:30/9:45/10:00 三档板块播报均准时，故不是 cron 表达式问题。续期后到期日顺延至 2026-08-26。旧 id 见各条 prev_job_id。提醒：CronList 按会话隔离，起任务的只能有一个会话。"
 }

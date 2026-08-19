@@ -343,9 +343,7 @@ def _build_app():
             self.rows = {}            # code -> (name_label, pct_label)
             self._drag_code = None    # 正在拖动的股票代码
             self._win_off = (0, 0)    # 拖动窗口时的指针偏移
-            self._status_text = ""    # 最近一次状态文字
-            self._status_color = FLAT_COLOR
-            self.status = None        # 最左边的时间标签，在 _render_rows 中创建
+            self._fetch_ok = True     # 上一次取数成功与否；失败时左侧格子前置 ⚠
 
             # 股票行容器（横向铺开，末尾带 + 按钮）
             self.body = tk.Frame(self, bg=BG)
@@ -368,7 +366,7 @@ def _build_app():
             self.t_ui = {}                # code -> {status,fill,skip} 该股信号栏控件
 
             # --- 市场脉搏（见 docs/market_pulse/spec/）---
-            self.pulse_text = None      # 横条末尾那个格子的标签
+            self.pulse_text = None      # 最左边那个格子的标签（兼拖动手柄）
             self._pulse_strip = ""      # 最近一次算出来的单行文案
             self._pulse_day = None      # 上次清理过的日期，跨日时重清
 
@@ -714,15 +712,16 @@ def _build_app():
             for child in self.body.winfo_children():
                 child.destroy()
             self.rows = {}
-            # 最左边：时间（兼作拖动手柄 + 右键退出）
-            self.status = tk.Label(self.body, bg=BG, font=("Menlo", 11),
-                                   cursor="fleur", text=self._status_text,
-                                   fg=self._status_color)
-            self.status.pack(side="left", padx=(0, 10), anchor="n")
-            self.status.bind("<ButtonPress-1>", self._win_press)
-            self.status.bind("<B1-Motion>", self._win_move)
+            # 最左边：池子脉搏（兼作拖动手柄 + 右键退出，原先由时间标签承担）
+            self.pulse_text = tk.Label(self.body, bg=BG, font=("Menlo", 11),
+                                       cursor="fleur", text=self._pulse_display(),
+                                       fg=self._pulse_color())
+            self.pulse_text.pack(side="left", padx=(0, 10), anchor="n")
+            self.pulse_text.bind("<ButtonPress-1>", self._win_press)
+            self.pulse_text.bind("<B1-Motion>", self._win_move)
             for btn in ("<Button-2>", "<Button-3>"):
-                self.status.bind(btn, lambda e: self._menu.tk_popup(e.x_root, e.y_root))
+                self.pulse_text.bind(btn,
+                                     lambda e: self._menu.tk_popup(e.x_root, e.y_root))
             self.t_ui = {}
             for code in self.codes:
                 cell = tk.Frame(self.body, bg=BG)
@@ -753,10 +752,6 @@ def _build_app():
                              font=("Menlo", 15), cursor="pointinghand")
             minus.pack(side="left", padx=(2, 4), anchor="n")
             minus.bind("<Button-1>", lambda e: self._prompt_delete())
-            # 横条末尾：市场脉搏单行文案（内容在 _pulse_tick 里更新）
-            self.pulse_text = tk.Label(self.body, text=self._pulse_strip,
-                                       bg=BG, fg=FLAT_COLOR, font=("Menlo", 11))
-            self.pulse_text.pack(side="left", padx=(12, 4), anchor="n")
             self._update_labels()
 
         def _update_labels(self):
@@ -812,13 +807,14 @@ def _build_app():
                 self._pulse_strip = "脉搏异常"
                 _trade_log(f"pulse error: {exc}")
             if self.pulse_text is not None:
-                self.pulse_text.config(text=self._pulse_strip)
+                self.pulse_text.config(text=self._pulse_display(),
+                                       fg=self._pulse_color())
 
         def refresh(self):
             try:
                 quotes = fetch_quotes(mp.merge_codes(self.codes))
                 self.quotes = {q["code"]: q for q in quotes}
-                self._set_status(f"● {time.strftime('%H:%M')}", DOWN_COLOR)
+                self._set_fetch_ok(True)
                 for code in list(self.books):
                     if code in self.quotes:
                         try:
@@ -830,15 +826,24 @@ def _build_app():
                 self._pulse_tick(quotes)
             except Exception:
                 # 网络/接口失败：保留上次价格，仅标记未更新
-                self._set_status(f"⚠ {time.strftime('%H:%M')}", UP_COLOR)
+                self._set_fetch_ok(False)
             self._update_labels()
             self.after(REFRESH_MS, self.refresh)
 
-        def _set_status(self, text, color):
-            self._status_text = text
-            self._status_color = color
-            if self.status is not None:
-                self.status.config(text=text, fg=color)
+        def _pulse_display(self):
+            """最左边那格的文字。取数失败时前置 ⚠，否则就是脉搏文案本身。"""
+            return self._pulse_strip if self._fetch_ok else f"⚠ {self._pulse_strip}"
+
+        def _pulse_color(self):
+            return FLAT_COLOR if self._fetch_ok else UP_COLOR
+
+        def _set_fetch_ok(self, ok):
+            """记录本次取数成败。时间已不再显示，但失败必须仍然看得见——
+            否则网络断了只表现为价格不动，是静默失败。"""
+            self._fetch_ok = ok
+            if self.pulse_text is not None:
+                self.pulse_text.config(text=self._pulse_display(),
+                                       fg=self._pulse_color())
 
     return StockWatch()
 
