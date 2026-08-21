@@ -291,3 +291,86 @@ def test_watch_codes_has_no_duplicates():
     import stock_watch as sw
     merged = mp.merge_codes(sw.load_config())
     assert len(merged) == len(set(merged))
+
+
+# ---- 取数搬到后台线程 2026-08-21 ----
+# 起因：refresh() 在主线程里同步做三次网络请求，实测单轮占用约 1.65 秒
+# （取数 1.57s 三条串行 + 脉搏计算 0.08s），而刷新周期是 3 秒——主线程被占用
+# 约 55% 的时间，期间所有 UI 事件排队，拖动窗口跟不上鼠标。_fetch 超时 8 秒
+# 三条串行，最坏一轮阻塞 24 秒。
+# 修法：把「取数 + 脉搏计算」抽成 collect_snapshot()，由后台线程执行，
+# 结果放队列，主线程只读队列并更新控件。
+# **Tkinter 的硬规则：只有主线程能碰控件。** 所以 collect_snapshot 必须
+# 是纯数据函数——下面有一条测试用 inspect 读它的源码来守这条规则。
+
+def _fake_fetch(monkeypatch, cn_text="", hk_text="", us_text="", raise_on=None):
+    """按传入的代码前缀返回对应的假响应；raise_on 命中时抛网络异常。"""
+    def fake(url, codes, headers=None):
+        head = codes[0]
+        if raise_on and any(c.startswith(raise_on) for c in codes):
+            raise OSError("fake network down")
+        if head.startswith("hk"):
+            return hk_text
+        if head.startswith("gb_"):
+            return us_text
+        return cn_text
+    monkeypatch.setattr(sw, "_fetch", fake)
+
+
+def test_collect_snapshot_returns_data_not_widgets(monkeypatch):
+    """collect_snapshot 成功时返回一个纯数据字典：取数结果、脉搏文案、
+    以及它算到的那个日期（主线程拿它回写 _pulse_day，避免后台线程改状态）。"""
+    _fake_fetch(monkeypatch,
+                cn_text='var hq_str_sz300308="中际旭创,900.0,890.0,904.2,910.0,'
+                        '880.0,0,0,100,10000' + ',0' * 22 + ',2026-08-21,15:00:00,00";\n')
+    snap = sw.collect_snapshot(["sz300308"], pulse_day="2026-08-20")
+    assert snap["ok"] is True
+    assert isinstance(snap["quotes"], list) and snap["quotes"]
+    assert isinstance(snap["pulse_strip"], str)
+    assert snap["pulse_day"]                      # 后台算出来，主线程回写
+    # 返回值里不许夹带任何 Tk 对象
+    for v in snap.values():
+        assert "tkinter" not in type(v).__module__
+
+
+def test_collect_snapshot_network_failure_is_not_an_exception(monkeypatch):
+    """取数失败必须返回 ok=False，而不是抛出去——后台线程里抛异常没人接，
+    界面会静默停止刷新（旧代码靠 refresh 里的 try 兜住，搬走之后要自己兜）。"""
+    _fake_fetch(monkeypatch, raise_on="sz")
+    snap = sw.collect_snapshot(["sz300308"], pulse_day=None)
+    assert snap["ok"] is False
+    assert snap["quotes"] is None
+
+
+def test_collect_snapshot_pulse_failure_does_not_kill_quotes(monkeypatch):
+    """脉搏算挂了不能连累行情：ok 仍是 True（取数成功），
+    只有 pulse_strip 退化成「脉搏异常」。这是原 _pulse_tick 的行为，搬家时要保住。"""
+    _fake_fetch(monkeypatch,
+                cn_text='var hq_str_sz300308="中际旭创,900.0,890.0,904.2,910.0,'
+                        '880.0,0,0,100,10000' + ',0' * 22 + ',2026-08-21,15:00:00,00";\n')
+    import market_pulse as mp
+    monkeypatch.setattr(mp, "build_state",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    snap = sw.collect_snapshot(["sz300308"], pulse_day="2026-08-21")
+    assert snap["ok"] is True
+    assert snap["quotes"]
+    assert snap["pulse_strip"] == "脉搏异常"
+
+
+def test_collect_snapshot_touches_no_widget():
+    """**这条守的是线程安全，不是功能。** Tkinter 只允许主线程操作控件，
+    而 collect_snapshot 跑在后台线程里。用源码检查挡住「顺手在里面 config
+    一下标签」这类改动——那种 bug 不一定当场崩，可能过几天随机崩一次。"""
+    import inspect
+    src = inspect.getsource(sw.collect_snapshot)
+    for forbidden in (".config(", ".configure(", "self.", "winfo_", ".after(",
+                      ".pack(", ".destroy("):
+        assert forbidden not in src, f"collect_snapshot 里出现了控件操作：{forbidden}"
+
+
+def test_collect_snapshot_is_module_level_not_method():
+    """它必须是模块级函数，不是 App 的方法——方法能拿到 self，
+    也就能碰控件，上面那条源码检查就形同虚设了。"""
+    import inspect
+    assert inspect.isfunction(sw.collect_snapshot)
+    assert not hasattr(sw.collect_snapshot, "__self__")

@@ -6,14 +6,22 @@
 import datetime
 import json
 import os
+import queue
 import re
+import threading
 import urllib.request
 import zoneinfo
+
+# market_pulse 不依赖 tkinter（实测 0 处引用），放模块级：collect_snapshot 是
+# 模块级函数，要用它。tkinter 相关的导入仍留在 _build_app() 里，保证这个模块
+# 在没有图形环境的地方（比如测试）也能被 import。
+import market_pulse as mp
 
 SINA_URL = "https://hq.sinajs.cn/list="
 SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_watch.json")
 REFRESH_MS = 3000  # 3 秒刷新，贴合新浪 L1 快照周期
+DRAIN_MS = 200     # 主线程收后台结果的轮询间隔；只做队列检查，开销可忽略
 
 _SINA_LINE = re.compile(r'hq_str_(\w+)="([^"]*)"')
 
@@ -243,6 +251,59 @@ def fetch_quotes(codes):
             for c in codes]
 
 
+def collect_snapshot(codes, pulse_day):
+    """取行情 + 算市场脉搏，返回纯数据。**这个函数跑在后台线程里。**
+
+    为什么要有它：Tkinter 只有一个线程跑事件循环，而取数是同步网络请求。
+    2026-08-21 实测单轮 refresh 占用主线程约 1.65 秒（取数 1.57 秒，三条路径
+    串行；脉搏计算 0.08 秒），而刷新周期只有 3 秒——主线程被占用约 55% 的时间，
+    期间所有 UI 事件排队不处理，拖动窗口时窗口跟不上鼠标。`_fetch` 的超时是
+    8 秒、三条串行，最坏一轮阻塞 24 秒。
+
+    **硬规则：这个函数不许碰任何 Tk 控件。** Tkinter 只允许主线程操作控件，
+    在后台线程里 config 一个标签不一定当场崩，可能过几天随机崩一次——那种
+    bug 极难查。所以这里只返回数据，上屏由主线程做。
+    `test_collect_snapshot_touches_no_widget` 用源码检查守这条规则。
+
+    参数 pulse_day 是主线程持有的「上次清理过的日期」。跨日清理要在这里做
+    （进程会连着跑好几天），但状态不在这里改——算出来的日期随返回值交回主线程。
+
+    返回 {"ok", "quotes", "pulse_strip", "pulse_day"}：
+      ok=False 表示取数失败，此时 quotes 与 pulse_strip 均为 None，
+      调用方保留上一次的价格、只标记未更新。
+    """
+    try:
+        quotes = fetch_quotes(mp.merge_codes(codes))
+    except Exception as exc:
+        # 后台线程里抛异常没人接，界面会静默停止刷新——必须在这里兜住。
+        # **但要记下来**：这个 except 原先什么都不记，2026-08-21 调试时
+        # 一个 NameError 被它静默吞掉，查了三轮才找到。兜住不等于不留痕。
+        _trade_log(f"fetch error: {type(exc).__name__}: {exc}")
+        return {"ok": False, "quotes": None, "pulse_strip": None,
+                "pulse_day": pulse_day}
+
+    strip, day = None, pulse_day
+    try:
+        now = mp.now_bj()          # 必须用北京时间，本机是 JST 快 1 小时
+        day = now.strftime("%Y-%m-%d")
+        if pulse_day != day:
+            mp.rotate_store(day)
+        pool = mp.parse_pool_quotes(quotes)
+        mp.append_store({"t": now.strftime(mp.TS_FMT),
+                         "r": {c: v["r"] for c, v in pool.items()
+                               if c in mp.POOL_CODES},
+                         "idx": {c: v["r"] for c, v in pool.items()
+                                 if c in mp.IDX_CODES}})
+        store = mp.load_store(max(mp.WINDOWS) * 2, now=now)
+        state = mp.build_state(store, now,
+                              live_r={c: v["r"] for c, v in pool.items()})
+        strip = mp.render_strip(state)
+    except Exception as exc:       # 脉搏出错不能连累自选行情
+        strip = "脉搏异常"
+        _trade_log(f"pulse error: {exc}")
+    return {"ok": True, "quotes": quotes, "pulse_strip": strip, "pulse_day": day}
+
+
 def load_config(path=CONFIG_PATH):
     """读自选代码列表，文件不存在返回 []。"""
     if not os.path.exists(path):
@@ -369,9 +430,13 @@ def _build_app():
             self.pulse_text = None      # 最左边那个格子的标签（兼拖动手柄）
             self._pulse_strip = ""      # 最近一次算出来的单行文案
             self._pulse_day = None      # 上次清理过的日期，跨日时重清
+            # 取数在后台线程做，结果经队列交给主线程上屏（见 collect_snapshot）
+            self._inbox = queue.Queue()
+            self._fetching = False      # 上一轮还在飞时跳过新的一轮
 
             self._render_rows()
             self.refresh()
+            self.drain()
 
         def _prompt_add(self):
             raw = simpledialog.askstring("添加自选", "输入股票代码（6 位）", parent=self)
@@ -782,38 +847,32 @@ def _build_app():
                         lab = ""
                     pct_lbl.config(text=f"{lab}{p:+.2f}%", fg=color)
 
-        def _pulse_tick(self, quotes):
-            """把池子部分落盘并重算单行文案。任何异常都不能影响自选渲染。"""
-            try:
-                now = mp.now_bj()      # 必须用北京时间，本机是 JST 快 1 小时
-                # 跨日清理必须每 tick 检查：进程会连着跑好几天，
-                # 只在启动时清一次的话，隔夜数据永远留在文件里。
-                today = now.strftime("%Y-%m-%d")
-                if self._pulse_day != today:
-                    mp.rotate_store(today)
-                    self._pulse_day = today
-                pool = mp.parse_pool_quotes(quotes)
-                snap = {"t": now.strftime(mp.TS_FMT),
-                        "r": {c: v["r"] for c, v in pool.items()
-                              if c in mp.POOL_CODES},
-                        "idx": {c: v["r"] for c, v in pool.items()
-                                if c in mp.IDX_CODES}}
-                mp.append_store(snap)
-                store = mp.load_store(max(mp.WINDOWS) * 2, now=now)
-                live_r = {c: v["r"] for c, v in pool.items()}
-                state = mp.build_state(store, now, live_r=live_r)
-                self._pulse_strip = mp.render_strip(state)
-            except Exception as exc:          # 脉搏出错不能连累自选行情
-                self._pulse_strip = "脉搏异常"
-                _trade_log(f"pulse error: {exc}")
-            if self.pulse_text is not None:
-                self.pulse_text.config(text=self._pulse_display(),
-                                       fg=self._pulse_color())
 
         def refresh(self):
+            """每 REFRESH_MS 起一次后台取数。**这个函数本身不碰网络**——
+            网络在 collect_snapshot 里、跑在后台线程上，所以这里不会阻塞 UI。
+            上一轮还没回来就跳过本轮，避免请求堆积（慢网络下会越积越多）。"""
+            if not self._fetching:
+                self._fetching = True
+                codes, day = list(self.codes), self._pulse_day
+                def work():
+                    snap = collect_snapshot(codes, day)
+                    self._inbox.put(snap)      # 只放数据，绝不碰控件
+                threading.Thread(target=work, daemon=True).start()
+            self.after(REFRESH_MS, self.refresh)
+
+        def drain(self):
+            """每 DRAIN_MS 检查一次后台结果并上屏。**只有这里碰控件。**
+            轮询间隔比刷新周期短得多，所以取数一回来就能上屏，不用等下一轮。"""
             try:
-                quotes = fetch_quotes(mp.merge_codes(self.codes))
-                self.quotes = {q["code"]: q for q in quotes}
+                snap = self._inbox.get_nowait()
+            except queue.Empty:
+                self.after(DRAIN_MS, self.drain)
+                return
+            self._fetching = False
+            self._pulse_day = snap["pulse_day"]
+            if snap["ok"]:
+                self.quotes = {q["code"]: q for q in snap["quotes"]}
                 self._set_fetch_ok(True)
                 for code in list(self.books):
                     if code in self.quotes:
@@ -823,12 +882,15 @@ def _build_app():
                             import traceback
                             _trade_log(f"{code} ⚠异常: {traceback.format_exc().splitlines()[-1]}")
                             traceback.print_exc()
-                self._pulse_tick(quotes)
-            except Exception:
+                self._pulse_strip = snap["pulse_strip"]
+                if self.pulse_text is not None:
+                    self.pulse_text.config(text=self._pulse_display(),
+                                           fg=self._pulse_color())
+            else:
                 # 网络/接口失败：保留上次价格，仅标记未更新
                 self._set_fetch_ok(False)
             self._update_labels()
-            self.after(REFRESH_MS, self.refresh)
+            self.after(DRAIN_MS, self.drain)
 
         def _pulse_display(self):
             """最左边那格的文字。取数失败时前置 ⚠，否则就是脉搏文案本身。"""
