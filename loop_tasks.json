@@ -152,6 +152,14 @@
       },
       "job_id": "7883c955",
       "rebuilt": "2026-09-22"
+    },
+    {
+      "name": "daily_ai_news",
+      "cron": "6 10 * * *",
+      "job_id": "1ca05229",
+      "created": "2026-09-23",
+      "rebuilt": "2026-09-23",
+      "prompt": "每日 AI 新闻晨报。运行 `cd ~/projects/my_scripts && python3 daily_ai_news.py`，它会抓取 RSS 源的近 24 小时条目、调公司内部 router（模型 csrs/csrs-default，端点 http://172.24.201.32:8080/v1，凭据从环境变量 LLM_API_KEY 读、缺省回落 ~/projects/umu/csrs/.env，绝不写进 my_scripts 公开仓）筛出 Top 20，**脚本自己发 Slack，不要再重复发一遍**。跑完把脚本输出贴在对话里，并报告三件事：抓到多少条候选、输出了几条、有没有源解析失败（脚本会打印 `[WARN] Failed to parse`）。若候选数明显低于 50 条或输出不足 20 条，把失败的源列出来。调试时可加 `--dry-run` 只打印不发 Slack。目标执行时刻 10:00 JST。"
     }
   ],
   "_timezone_note": "重要：harness cron 按机器本地时间(JST, UTC+9)触发，且实测有约+30分钟执行延迟(7-24两次观测)。盘面任务已按 目标BJT时间+1h(JST换算)-30min(延迟补偿) 设置：开盘预测 9:42 JST(目标执行≈9:12 BJT)，收盘顾问 15:15 JST(目标执行≈14:45 BJT)。若延迟消失，提前触发也可接受（信号已存在），晚触发不可接受（错过窗口）。",
