@@ -1,0 +1,8 @@
+.ct-translation {
+  color: inherit;
+  opacity: 0.72;
+  margin: 0.25em 0 1em;
+  font-size: inherit;
+  line-height: inherit;
+}
+.ct-translation.ct-error { color: #d0342c; opacity: 1; }
