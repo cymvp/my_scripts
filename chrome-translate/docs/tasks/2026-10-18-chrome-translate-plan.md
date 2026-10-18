@@ -365,8 +365,8 @@ git commit -m "docs(chrome-translate): README and acceptance record"
 
 | 用例 | 结果 | 现象 |
 |---|---|---|
-| T1 | | |
-| T2 | | |
-| T3 | | |
-| T4 | | |
-| T10 | | |
+| T1 | 通过 | 2026-10-18 用户在 Chrome 手工验收 |
+| T2 | 通过 | 2026-10-18 用户在 Chrome 手工验收 |
+| T3 | 通过 | 2026-10-18 用户在 Chrome 手工验收 |
+| T4 | 通过 | 2026-10-18 用户在 Chrome 手工验收 |
+| T10 | 通过 | 2026-10-18 用户在 Chrome 手工验收 |
