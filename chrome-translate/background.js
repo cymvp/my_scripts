@@ -42,8 +42,10 @@ chrome.action.onClicked.addListener(async tab => {
   let resp;
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['readability.js', 'lib.js', 'content.js'] });
-    await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
     resp = await chrome.tabs.sendMessage(tabId, { type: 'toggle' });
+    if (resp && resp.paragraphs && resp.paragraphs.length) {
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
+    }
   } catch (e) {
     runs.delete(tabId);
     flashBadge(tabId, 'N/A');
@@ -77,4 +79,10 @@ chrome.action.onClicked.addListener(async tab => {
 chrome.tabs.onRemoved.addListener(tabId => {
   const run = runs.get(tabId);
   if (run) { run.controller.abort(); runs.delete(tabId); }
+});
+
+// 翻译中页面跳转：旧页面的译文已无处可插，中止并清角标。
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  const run = runs.get(tabId);
+  if (run && info.status === 'loading') { run.controller.abort(); runs.delete(tabId); setBadge(tabId, ''); }
 });

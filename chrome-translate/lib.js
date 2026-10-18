@@ -129,7 +129,8 @@ CT.translateBatch = async function (cfg, texts, signal, fetchImpl) {
     signal,
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); } catch (e) { throw new Error('返回格式错误'); }
   const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   return CT.parseTranslation(content, texts.length);
 };
@@ -153,7 +154,8 @@ CT.runTranslation = async function (paragraphs, cfg, hooks) {
       } catch (e) {
         if (hooks.signal.aborted) return;
         failed = true;
-        result = e instanceof Error ? e : new Error(String(e));
+        if (e && e.name === 'TimeoutError') result = new Error('超时');
+        else result = e instanceof Error ? e : new Error(String(e));
       }
       if (hooks.signal.aborted) return;
       hooks.onBatch(batch.start, batch.texts, result);

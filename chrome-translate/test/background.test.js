@@ -35,3 +35,17 @@ test('runTranslation stops issuing batches after abort', async () => {
   await CT.runTranslation(['a b', 'c d', 'e f'], cfg, { onBatch() {}, onProgress() {}, signal: ac.signal, fetchImpl: f, concurrency: 1, batchOpts: { maxChars: 3 } });
   expect(calls).toBe(1);
 });
+
+test('translateBatch reports non-JSON body as format error', async () => {
+  const f = async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } });
+  await expect(CT.translateBatch(cfg, ['a b'], new AbortController().signal, f)).rejects.toThrow('返回格式错误');
+});
+
+test('runTranslation reports a timed-out batch as 超时', async () => {
+  const f = (_u, init) => new Promise((_res, rej) => init.signal.addEventListener('abort', () => rej(init.signal.reason)));
+  const errors = [];
+  const r = await CT.runTranslation(['a b'], cfg, { onBatch: (_s, _t, res) => errors.push(res.message), onProgress() {},
+    signal: new AbortController().signal, fetchImpl: f, timeoutMs: 20 });
+  expect(errors).toEqual(['超时']);
+  expect(r.failed).toBe(true);
+});

@@ -7,7 +7,7 @@ if (!window.__ctLoaded) {
     const clone = document.cloneNode(true);
     const article = new Readability(clone).parse();
     if (!article || !article.content) return [];
-    const tmp = document.createElement('div');
+    const tmp = document.implementation.createHTMLDocument('').body;
     tmp.innerHTML = article.content;
     const paragraphs = CT.matchParagraphs(tmp, document);
     const h1 = CT.matchTitle(article.title, document);

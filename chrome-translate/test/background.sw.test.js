@@ -20,7 +20,7 @@ function loadBackground({ fetchImpl, sendMessageImpl, execFail } = {}) {
       runtime: { openOptionsPage() {}, getPlatformInfo: vi.fn(async () => ({})) },
       scripting: {
         executeScript: async () => { if (execFail) throw new Error('no'); },
-        insertCSS: async () => {},
+        insertCSS: vi.fn(async () => {}),
       },
       tabs: {
         onRemoved: { addListener: fn => (listeners.removed = fn) },
@@ -74,4 +74,21 @@ test('keepalive pings the runtime while a run is in flight', async () => {
   await p;
   expect(ctx.chrome.runtime.getPlatformInfo).toHaveBeenCalled();
   vi.useRealTimers();
+});
+
+test('CSS is not injected when the click only removes translations', async () => {
+  const { listeners, ctx } = loadBackground({ sendMessageImpl: async () => ({ removed: true }) });
+  await listeners.click({ id: 5 });
+  expect(ctx.chrome.scripting.insertCSS).not.toHaveBeenCalled();
+});
+
+test('navigating away during a run aborts it', async () => {
+  let fetches = 0;
+  const { listeners, badge } = loadBackground({ fetchImpl: async () => { fetches++; return slowOk(); } });
+  const p = listeners.click({ id: 6 });
+  await new Promise(r => setTimeout(r, 10));
+  listeners.updated(6, { status: 'loading' }, {});
+  await p;
+  expect(badge.filter(b => b[1] === '100%').length).toBe(0);
+  expect(badge.at(-1)).toEqual([6, '']);
 });
