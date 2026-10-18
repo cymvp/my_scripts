@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Article Translator (EN→ZH)",
+  "version": "0.1.0",
+  "description": "点一下图标，把当前文章翻成中英对照。翻译走个人 LLM Router。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://172.24.201.32/*"],
+  "optional_host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "翻译本页" },
+  "options_page": "options.html"
+}
