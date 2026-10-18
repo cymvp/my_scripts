@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Article Translator 设置</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 520px; margin: 32px auto; padding: 0 16px; color: #222; }
+  label { display: block; margin-top: 16px; font-weight: 600; }
+  input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; font: inherit; }
+  button { margin-top: 20px; padding: 8px 20px; font: inherit; }
+  #notice { min-height: 1.6em; color: #b00020; }
+  #notice.ok { color: #1a7f37; }
+  small { color: #666; }
+</style>
+</head>
+<body>
+  <h1>Article Translator 设置</h1>
+  <p id="notice"></p>
+  <label>Endpoint <small>（OpenAI 兼容接口地址，到 /v1 为止）</small><input id="endpoint" type="url"></label>
+  <label>模型<input id="model" type="text"></label>
+  <label>API key <small>（只存在本机 Chrome 里）</small><input id="apiKey" type="password"></label>
+  <button id="save">保存</button>
+  <script src="options.js"></script>
+</body>
+</html>
