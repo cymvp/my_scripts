@@ -183,6 +183,30 @@ def test_hk_quotes_parsed_from_tencent():
     assert qs["hk02513"]["change_pct"] == round((1060.0 - 862.0) / 862.0 * 100, 2)
 
 
+def test_hk_quotes_parsed_from_tencent_realtime_prefix():
+    """腾讯实时港股用 r_ 前缀请求，返回 v_r_hk...；解析后代码要还原成 hk...，
+    才能和自选清单对上。不带 r_ 的 hk 前缀实测延迟约 15 分钟（2026-10-29
+    北京 10:51 拉 hk03032，时间戳停在 10:35:13；r_hk03032 是 10:51:13）。"""
+    text = 'v_r_hk03032="100~恒生科技ETF~03032~3.788~3.856~3.840~36653421.0~0~0~3.788";\n'
+    qs = {q["code"]: q for q in sw.parse_tencent_hk_response(text)}
+    assert qs["hk03032"]["name"] == "恒生科技ETF"
+    assert qs["hk03032"]["change_pct"] == round((3.788 - 3.856) / 3.856 * 100, 2)
+
+
+def test_fetch_quotes_requests_hk_with_realtime_prefix(monkeypatch):
+    """fetch_quotes 向腾讯请求港股时必须带 r_ 前缀，返回仍按 hk 代码对齐。"""
+    calls = []
+
+    def fake_fetch(url, codes, headers=None):
+        calls.append((url, list(codes)))
+        return 'v_r_hk03032="100~恒生科技ETF~03032~3.788~3.856~3.840~1.0~0~0~3.788";\n'
+
+    monkeypatch.setattr(sw, "_fetch", fake_fetch)
+    qs = sw.fetch_quotes(["hk03032"])
+    assert calls == [(sw._TENCENT_URL, ["r_hk03032"])]
+    assert qs[0]["code"] == "hk03032" and qs[0]["ok"] is True
+
+
 def test_hk_quotes_invalid_when_no_data():
     """腾讯对未上市/停牌返回空或缺字段时，标记 ok=False 而不是给错数字。"""
     qs = sw.parse_tencent_hk_response('v_hk09999="";\n')

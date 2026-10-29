@@ -91,7 +91,7 @@ def parse_sina_response(text):
 
 
 _TENCENT_URL = "https://qt.gtimg.cn/q="
-_TENCENT_LINE = re.compile(r'v_(hk\d+)="([^"]*)"')
+_TENCENT_LINE = re.compile(r'v_(?:r_)?(hk\d+)="([^"]*)"')
 _US_LINE = re.compile(r'hq_str_(gb_\w+)="([^"]*)"')
 # 美股成交时间形如 "Jul 30 04:00PM EDT"，据此判断这笔价格属于哪个时段
 _US_TIME = re.compile(r"(\d{1,2}):(\d{2})(AM|PM)")
@@ -242,7 +242,8 @@ def fetch_quotes(codes):
         for q in parse_sina_response(_fetch(SINA_URL, cn, SINA_HEADERS)):
             got[q["code"]] = q
     if hk:
-        for q in parse_tencent_hk_response(_fetch(_TENCENT_URL, hk)):
+        # r_ 前缀才是实时；不带 r_ 的 hk 前缀实测延迟约 15 分钟（2026-10-29）
+        for q in parse_tencent_hk_response(_fetch(_TENCENT_URL, ["r_" + c for c in hk])):
             got[q["code"]] = q
     if us:
         for q in parse_sina_us_response(_fetch(SINA_URL, us, SINA_HEADERS)):
