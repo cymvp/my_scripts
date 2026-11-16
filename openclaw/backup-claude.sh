@@ -158,7 +158,23 @@ if [ -d "${GLOBAL_DEST}/projects" ]; then
     done
 fi
 
+# Files over GitHub's 100MB per-file limit can never be pushed: one 116MB session
+# transcript blocked every push from 2026-10-25 to 2026-11-16. Keep such files out
+# of sync in both directions. rsync never deletes an excluded path, so the restore
+# --delete below leaves the local original alone. Both roots are scanned so that a
+# leftover oversize copy in the repo is not restored onto the local side either.
+MAX_FILE_MB=95
+BIG_EXCLUDES=()
+for root in "${HOME}/.claude" "${GLOBAL_DEST}"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r -d '' f; do
+        BIG_EXCLUDES+=("--exclude=/${f#${root}/}")
+        log "skip oversize (>${MAX_FILE_MB}MB, kept local only): ${f#${root}/}"
+    done < <(find "$root" -type f -size +${MAX_FILE_MB}M -print0 2>/dev/null)
+done
+
 /usr/bin/rsync -a --update --no-links \
+    "${BIG_EXCLUDES[@]+"${BIG_EXCLUDES[@]}"}" \
     --exclude='statsig/' \
     --exclude='.git/' \
     --exclude='*.sock' \
@@ -221,7 +237,17 @@ TS=$(date '+%Y-%m-%d %H:%M:%S')
 if [ -d "${REPO_ROOT}/.git" ]; then
     cd "${REPO_ROOT}"
 
+    # Cap packing memory: on 2026-11-13 push plus auto repack used ~8.6GB and
+    # pushed the machine deep into swap.
+    /usr/bin/git config pack.windowMemory 256m
+    /usr/bin/git config pack.threads 1
+
     /usr/bin/git add -A
+    # Never commit a file GitHub would reject; unstage it instead.
+    while IFS= read -r -d '' f; do
+        /usr/bin/git rm --cached -q --ignore-unmatch -- "${f#./}"
+        log "git: not committing ${f#./} (>${MAX_FILE_MB}MB)"
+    done < <(find . -path ./.git -prune -o -type f -size +${MAX_FILE_MB}M -print0)
     if ! /usr/bin/git diff --cached --quiet; then
         /usr/bin/git commit -m "backup: ${HOSTNAME_SHORT} ${TS}" || true
         log "git commit created"
@@ -293,6 +319,7 @@ fi
 
 if [ -d "${GLOBAL_DEST}" ]; then
     /usr/bin/rsync -a --delete --no-links \
+        "${BIG_EXCLUDES[@]+"${BIG_EXCLUDES[@]}"}" \
         --exclude='statsig/' \
         --exclude='.git/' \
         --exclude='*.sock' \

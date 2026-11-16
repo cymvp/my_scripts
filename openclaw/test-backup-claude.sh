@@ -121,20 +121,39 @@ sync_machine() {
     local local_dir="$1"    # 模拟 ~/.claude/
     local repo_dir="$2"     # 模拟仓库中的 claude-global/ 子目录
     local git_repo="$3"     # 模拟 git 仓库根目录
+    local max_mb="${4:-0}"  # 单文件上限（MB），0 表示不限；对应 backup-claude.sh 的 MAX_FILE_MB
+
+    # 超过上限的文件两个方向都排除：不拷进仓库，restore 的 --delete 也不会删它
+    local ex=()
+    if [[ "$max_mb" -gt 0 ]]; then
+        local root f
+        for root in "$local_dir" "$repo_dir"; do
+            [[ -d "$root" ]] || continue
+            while IFS= read -r -d '' f; do
+                ex+=("--exclude=/${f#${root}/}")
+            done < <(find "$root" -type f -size +${max_mb}M -print0)
+        done
+    fi
 
     # Phase 1: Backup（本地 → 仓库），--update 只覆盖较旧的文件，不删除仓库中的文件
     mkdir -p "${repo_dir}"
-    rsync -a --update "${local_dir}/" "${repo_dir}/"
+    rsync -a --update "${ex[@]+"${ex[@]}"}" "${local_dir}/" "${repo_dir}/"
 
-    # Phase 2: Commit
-    (cd "$git_repo" && git add -A && git diff --cached --quiet || (cd "$git_repo" && git add -A && git commit -m "backup $(date +%s)" >/dev/null 2>&1)) || true
+    # Phase 2: Commit（超过上限的文件即使在仓库目录里，也从暂存区拿掉，不提交）
+    (cd "$git_repo" && git add -A
+     if [[ "$max_mb" -gt 0 ]]; then
+         while IFS= read -r -d '' f; do
+             git rm --cached -q --ignore-unmatch -- "${f#./}"
+         done < <(find . -path ./.git -prune -o -type f -size +${max_mb}M -print0)
+     fi
+     git diff --cached --quiet || git commit -m "backup $(date +%s)" >/dev/null 2>&1) || true
 
     # Phase 3: Pull（合并远程变更）
     (cd "$git_repo" && git pull --no-rebase >/dev/null 2>&1) || true
 
     # Phase 4: Restore（仓库 → 本地），--delete 使本地与仓库完全一致
     mkdir -p "${repo_dir}" "${local_dir}"
-    rsync -a --delete "${repo_dir}/" "${local_dir}/"
+    rsync -a --delete "${ex[@]+"${ex[@]}"}" "${repo_dir}/" "${local_dir}/"
 
     # Phase 5: Push
     (cd "$git_repo" && git push >/dev/null 2>&1) || true
@@ -500,6 +519,48 @@ test_12_special_characters_in_filenames() {
     cleanup_env
 }
 
+test_13_oversize_file_stays_local() {
+    echo -e "\n${BOLD}测试 13: 超过上限的文件 — 不进仓库、不进 git 历史、restore 不删本地、其余照常同步${NC}"
+    setup_env
+
+    # 上限设成 1MB，用 2MB 的文件模拟 GitHub 推不上去的大会话记录
+    local max_mb=1
+    mkdir -p "$A_LOCAL/projects/p"
+    echo "small" > "$A_LOCAL/projects/p/small.jsonl"
+    mkfile -n 2m "$A_LOCAL/projects/p/big.jsonl"
+
+    sync_machine "$A_LOCAL" "$A_SYNC" "$A_REPO" "$max_mb"
+
+    assert_file_not_exists "$A_SYNC/projects/p/big.jsonl" "大文件没有拷进仓库目录"
+    assert_file_exists "$A_LOCAL/projects/p/big.jsonl" "restore 的 --delete 没有删掉本地大文件"
+    local big_in_history
+    big_in_history=$(cd "$A_REPO" && git rev-list --objects --all \
+        | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
+        | awk -v lim=$((max_mb*1024*1024)) '$1=="blob" && $2>lim' | wc -l | tr -d ' ')
+    if [[ "$big_in_history" == "0" ]]; then
+        pass "git 历史里没有超过上限的文件"
+    else
+        fail "git 历史里有 ${big_in_history} 个超过上限的文件"
+    fi
+
+    sync_machine "$B_LOCAL" "$B_SYNC" "$B_REPO" "$max_mb"
+    assert_file_exists "$B_LOCAL/projects/p/small.jsonl" "小文件照常同步到 B"
+    assert_file_not_exists "$B_LOCAL/projects/p/big.jsonl" "大文件不会出现在 B"
+
+    # 已经误入仓库目录的大文件（例如修复前留下的），提交前要被拦下
+    mkfile -n 2m "$A_SYNC/projects/p/leftover.jsonl"
+    sync_machine "$A_LOCAL" "$A_SYNC" "$A_REPO" "$max_mb"
+    local leftover_tracked
+    leftover_tracked=$(cd "$A_REPO" && git ls-files -- claude-global/projects/p/leftover.jsonl | wc -l | tr -d ' ')
+    if [[ "$leftover_tracked" == "0" ]]; then
+        pass "仓库目录里已有的大文件不会被提交"
+    else
+        fail "仓库目录里已有的大文件被提交了"
+    fi
+
+    cleanup_env
+}
+
 # =============================================================================
 # 执行所有测试
 # =============================================================================
@@ -520,6 +581,7 @@ test_09_conflict_detection
 test_10_jsonl_append_merge
 test_11_empty_dirs
 test_12_special_characters_in_filenames
+test_13_oversize_file_stays_local
 
 # ---- 结果汇总 ----
 echo ""
